@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { createContract, createWalletClient, custom, encodeFunctionData } from 'viem';
+import { getContract, createWalletClient, custom, encodeFunctionData } from 'viem';
 import { createPrividiumClient } from 'prividium';
 import { prividium } from './prividium';
 import { NOTES_ABI } from './notesAbi';
@@ -110,7 +110,7 @@ export default function App() {
 
   const notesContract = useMemo(() => {
     if (!CONTRACT_ADDRESS) return null;
-    return createContract({
+    return getContract({
       address: CONTRACT_ADDRESS,
       abi: NOTES_ABI,
       client: rpcClient
