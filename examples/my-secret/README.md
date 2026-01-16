@@ -33,7 +33,8 @@ npx prividium proxy \
 forge create \
   --rpc-url http://127.0.0.1:24101/rpc \
   --private-key <YOUR_KEY> \
-  contracts/NoteRegistry.sol:NoteRegistry
+  contracts/NoteRegistry.sol:NoteRegistry \
+  --broadcast
 ```
 
 Copy the deployed contract address.
