@@ -48,6 +48,10 @@ body {
   margin-bottom: 24px;
 }
 
+.teaching.compact {
+  margin-top: 24px;
+}
+
 .teaching-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
@@ -79,6 +83,13 @@ body {
 
 textarea {
   min-height: 120px;
+  padding: 12px;
+  border-radius: 12px;
+  border: 1px solid #ccd2e2;
+  font-size: 14px;
+}
+
+input {
   padding: 12px;
   border-radius: 12px;
   border: 1px solid #ccd2e2;
@@ -133,6 +144,13 @@ button {
 button.secondary {
   background: #e7ebf6;
   color: #2b3345;
+}
+
+.link-button {
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
 button:disabled {
@@ -204,6 +222,8 @@ button:disabled {
   gap: 12px;
   align-items: center;
   margin-bottom: 8px;
+  justify-content: space-between;
+  flex-wrap: wrap;
 }
 
 .badge {
@@ -240,6 +260,15 @@ button:disabled {
   font-size: 14px;
 }
 
+.countdown {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+  font-size: 12px;
+  color: #6c7486;
+}
+
 .time {
   color: #6c7486;
   font-size: 12px;
@@ -272,6 +301,51 @@ button:disabled {
   margin: 0;
   font-size: 13px;
   color: #6c7486;
+}
+
+.message-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.message-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+
+.message-title {
+  margin: 0;
+  font-size: 26px;
+}
+
+.metadata {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 12px;
+  background: #f7f8ff;
+  border-radius: 12px;
+  padding: 12px 16px;
+  font-size: 13px;
+}
+
+.metadata .label {
+  display: block;
+  font-weight: 600;
+  color: #667085;
+}
+
+.private-block {
+  border: 1px solid #e6e9f2;
+  border-radius: 12px;
+  padding: 12px 16px;
+}
+
+.private-text {
+  margin: 0;
+  font-size: 15px;
 }
 
 details {

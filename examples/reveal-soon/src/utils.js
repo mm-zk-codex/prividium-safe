@@ -10,9 +10,9 @@ export function formatTimestamp(seconds) {
   return new Date(Number(seconds) * 1000).toLocaleString();
 }
 
-export function timeAgo(seconds) {
+export function timeAgo(seconds, nowSeconds = Math.floor(Date.now() / 1000)) {
   if (!seconds) return '';
-  const diffMs = Date.now() - Number(seconds) * 1000;
+  const diffMs = (nowSeconds - Number(seconds)) * 1000;
   const diffMins = Math.floor(diffMs / 60000);
   if (diffMins < 1) return 'just now';
   if (diffMins < 60) return `${diffMins}m ago`;
@@ -22,10 +22,10 @@ export function timeAgo(seconds) {
   return `${diffDays}d ago`;
 }
 
-export function formatRemaining(seconds) {
-  const remaining = Number(seconds) - Math.floor(Date.now() / 1000);
+export function formatCountdown(targetSeconds, nowSeconds = Math.floor(Date.now() / 1000)) {
+  const remaining = Number(targetSeconds) - Number(nowSeconds);
   if (Number.isNaN(remaining)) return '';
-  if (remaining <= 0) return 'any moment now';
+  if (remaining <= 0) return 'revealed';
   const minutes = Math.floor(remaining / 60);
   const secs = remaining % 60;
   if (minutes < 1) return `${secs}s`;
@@ -34,6 +34,19 @@ export function formatRemaining(seconds) {
   const days = Math.floor(hours / 24);
   if (days < 1) return `${hours}h ${minutes % 60}m`;
   return `${days}d ${hours % 24}h`;
+}
+
+export function formatRelative(targetSeconds, nowSeconds = Math.floor(Date.now() / 1000)) {
+  const diff = Number(targetSeconds) - Number(nowSeconds);
+  if (Number.isNaN(diff)) return '';
+  const abs = Math.abs(diff);
+  const minutes = Math.floor(abs / 60);
+  if (minutes < 1) return diff >= 0 ? 'in seconds' : 'moments ago';
+  if (minutes < 60) return diff >= 0 ? `in ${minutes}m` : `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return diff >= 0 ? `in ${hours}h` : `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  return diff >= 0 ? `in ${days}d` : `${days}d ago`;
 }
 
 export function explorerTxUrl(chain, hash) {
