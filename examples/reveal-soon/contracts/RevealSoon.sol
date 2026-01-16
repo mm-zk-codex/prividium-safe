@@ -2,13 +2,14 @@
 pragma solidity ^0.8.20;
 
 /// @notice Time-gated message registry for the RevealSoon demo.
-/// @dev Payloads are stored immediately; read access is gated by reveal time.
+/// @dev Dual payloads are stored immediately; read access for the private text is gated by reveal time.
 contract RevealSoon {
     struct Message {
         address author;
         uint64 createdAt;
         uint64 revealAt;
-        string payload;
+        string publicText;
+        string privateText;
     }
 
     struct MessageHeader {
@@ -16,12 +17,15 @@ contract RevealSoon {
         address author;
         uint64 createdAt;
         uint64 revealAt;
-        bool isRevealedNow;
     }
 
     Message[] private messages;
 
-    function createMessage(string calldata payload, uint32 delaySeconds) external returns (uint256 id) {
+    function createMessage(
+        string calldata publicText,
+        string calldata privateText,
+        uint32 delaySeconds
+    ) external returns (uint256 id) {
         id = messages.length;
         uint64 createdAt = uint64(block.timestamp);
         uint64 revealAt = createdAt + delaySeconds;
@@ -30,7 +34,8 @@ contract RevealSoon {
                 author: msg.sender,
                 createdAt: createdAt,
                 revealAt: revealAt,
-                payload: payload
+                publicText: publicText,
+                privateText: privateText
             })
         );
     }
@@ -39,38 +44,59 @@ contract RevealSoon {
         return messages.length;
     }
 
-    /// @notice Returns recent messages in reverse chronological order.
-    /// @param limit Max number of messages to return.
-    /// @param offset Number of newest messages to skip (cursor).
-    function getRecentMessages(uint256 limit, uint256 offset) external view returns (MessageHeader[] memory) {
+    function getMessageHeader(uint256 id) external view returns (MessageHeader memory) {
+        require(id < messages.length, "Message not found");
+        Message storage message = messages[id];
+        return
+            MessageHeader({
+                id: id,
+                author: message.author,
+                createdAt: message.createdAt,
+                revealAt: message.revealAt
+            });
+    }
+
+    /// @notice Returns messages in ascending id order.
+    /// @param start First message id to return.
+    /// @param count Max number of messages to return.
+    function getMessagesRange(uint256 start, uint256 count) external view returns (MessageHeader[] memory) {
         uint256 total = messages.length;
-        if (offset >= total || limit == 0) {
+        if (start >= total || count == 0) {
             return new MessageHeader[](0);
         }
 
-        uint256 available = total - offset;
-        uint256 count = limit < available ? limit : available;
-        MessageHeader[] memory result = new MessageHeader[](count);
+        uint256 available = total - start;
+        uint256 length = count < available ? count : available;
+        MessageHeader[] memory result = new MessageHeader[](length);
 
-        for (uint256 i = 0; i < count; i++) {
-            uint256 messageId = total - offset - 1 - i;
+        for (uint256 i = 0; i < length; i++) {
+            uint256 messageId = start + i;
             Message storage message = messages[messageId];
             result[i] = MessageHeader({
                 id: messageId,
                 author: message.author,
                 createdAt: message.createdAt,
-                revealAt: message.revealAt,
-                isRevealedNow: block.timestamp >= message.revealAt
+                revealAt: message.revealAt
             });
         }
 
         return result;
     }
 
-    function getMessagePayload(uint256 id) external view returns (string memory) {
+    function getPublicText(uint256 id) external view returns (string memory) {
+        require(id < messages.length, "Message not found");
+        return messages[id].publicText;
+    }
+
+    function getPrivateText(uint256 id) external view returns (string memory) {
         require(id < messages.length, "Message not found");
         Message storage message = messages[id];
         require(block.timestamp >= message.revealAt, "Message not revealed");
-        return message.payload;
+        return message.privateText;
+    }
+
+    function isRevealed(uint256 id) external view returns (bool) {
+        require(id < messages.length, "Message not found");
+        return block.timestamp >= messages[id].revealAt;
     }
 }

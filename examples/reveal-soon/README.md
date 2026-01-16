@@ -1,15 +1,16 @@
 # RevealSoon (Prividium Example)
 
-RevealSoon demonstrates **time-gated privacy** on Prividium: a secret message is stored immediately in contract storage,
-but only becomes publicly readable after a chosen delay. There is **no explicit reveal transaction**—the payload is
-already on-chain and Prividium simply changes read access based on time.
+RevealSoon demonstrates **public teaser + private reveal** on Prividium: each message stores a public teaser immediately
+and a private reveal that stays unreadable until a chosen time. There is **no explicit reveal transaction**—the payloads
+are already on-chain and Prividium only changes read access when the reveal time arrives.
 
 ## What this demo teaches
 
-- **Time-gated privacy**: payloads are stored immediately, but readable only after `revealAt`.
+- **Dual payloads on-chain**: both `publicText` and `privateText` are stored immediately in contract storage.
+- **Public now, private later**: `publicText` is readable immediately; `privateText` becomes readable after `revealAt`.
 - **No events needed**: the feed is built entirely from storage reads via view methods.
 - **No explicit reveal**: there is no `reveal()` function; read access changes automatically.
-- **No browser storage**: secret payloads are never saved to localStorage or sessionStorage.
+- **No browser storage**: payloads are never saved to localStorage/sessionStorage.
 
 ## Setup
 
@@ -68,8 +69,8 @@ Open the URL printed by Vite.
 
 ## Why there is no explicit reveal transaction
 
-The payload is already stored in contract storage. RevealSoon only checks whether the current time is past
-`revealAt`. If it is, anyone can read the payload. If not, the read reverts or returns empty. There is **no** function
+The payloads are already stored in contract storage. RevealSoon only checks whether the current time is past
+`revealAt`. If it is, anyone can read the private payload. If not, the read reverts. There is **no** function
 that flips a flag or mutates state; the reveal is purely **view-level gating**.
 
 ## Why no events are used
@@ -77,27 +78,41 @@ that flips a flag or mutates state; the reveal is purely **view-level gating**.
 Prividium chains restrict event visibility for privacy. This demo never queries events or past logs; the feed is built
 entirely from contract storage view methods so it works within Prividium’s privacy model.
 
-## How time-gated reads work
+## How dual payload reads work
 
-1. `createMessage(payload, delaySeconds)` stores the payload, `createdAt`, and `revealAt` in contract storage.
-2. `getRecentMessages(limit, offset)` reads headers (id, author, createdAt, revealAt, isRevealedNow).
-3. If `isRevealedNow` is true, the UI calls `getMessagePayload(id)` to display the text.
-4. If `isRevealedNow` is false, the UI shows a placeholder and does **not** reveal the content.
+1. `createMessage(publicText, privateText, delaySeconds)` stores both parts, plus `createdAt` and `revealAt`.
+2. `getMessageHeader(id)` and `getMessagesRange(start, count)` return metadata for list views.
+3. `getPublicText(id)` is always readable.
+4. `getPrivateText(id)` only succeeds after `revealAt` (otherwise it reverts).
 
 ## Why the payload is never stored in the browser
 
 The secret message lives in contract storage and is protected by Prividium’s privacy layer. Storing it in
-`localStorage` or `sessionStorage` would leak the secret. This demo keeps the message only in memory until the
+`localStorage` or `sessionStorage` would leak the secret. This demo keeps the payloads only in memory until the
 transaction is submitted.
 
-## How this differs from a public chain
+## Shareable message page
 
-On a standard public chain, anyone can read transaction calldata and contract storage immediately. With Prividium,
-**the payload is still on-chain** but **unreadable until the reveal time**. The chain already holds the data—Prividium
-controls when it becomes publicly readable.
+Each message has a shareable route at `/message/:id`. The page:
+
+- Shows the public teaser immediately.
+- Displays a live countdown to reveal.
+- Shows author + timestamps + tx hash (if available in-session).
+- Automatically fetches and displays the private text once revealed.
+- Includes a **Share** button that copies the current URL.
+
+## How the “Upcoming Unlocks” list is built
+
+The contract only stores messages by incremental id. The UI:
+
+1. Reads `getMessagesCount()`.
+2. Fetches the most recent N ids with `getMessagesRange(start, count)`.
+3. Reads each `publicText`.
+4. Sorts client-side by `revealAt` ascending to show upcoming reveals.
 
 ## Notes for operators
 
-- The feed uses `getMessagesCount()` + `getRecentMessages(limit, offset)` and **no events**.
-- Permissions must allow `createMessage`, `getMessagesCount`, `getRecentMessages`, and `getMessagePayload`.
-- Secrets are **not** stored in browser storage; they remain in contract storage under Prividium privacy.
+- Permissions must allow `createMessage`, `getMessagesCount`, `getMessageHeader`, `getMessagesRange`, `getPublicText`,
+  and `getPrivateText`.
+- The demo uses storage reads only (no events).
+- Payloads are never stored in browser storage; they remain in contract storage under Prividium privacy.

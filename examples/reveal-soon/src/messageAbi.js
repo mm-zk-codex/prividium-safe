@@ -4,7 +4,8 @@ export const REVEAL_SOON_ABI = [
     name: 'createMessage',
     stateMutability: 'nonpayable',
     inputs: [
-      { name: 'payload', type: 'string' },
+      { name: 'publicText', type: 'string' },
+      { name: 'privateText', type: 'string' },
       { name: 'delaySeconds', type: 'uint32' }
     ],
     outputs: [{ name: 'id', type: 'uint256' }]
@@ -18,11 +19,29 @@ export const REVEAL_SOON_ABI = [
   },
   {
     type: 'function',
-    name: 'getRecentMessages',
+    name: 'getMessageHeader',
+    stateMutability: 'view',
+    inputs: [{ name: 'id', type: 'uint256' }],
+    outputs: [
+      {
+        name: '',
+        type: 'tuple',
+        components: [
+          { name: 'id', type: 'uint256' },
+          { name: 'author', type: 'address' },
+          { name: 'createdAt', type: 'uint64' },
+          { name: 'revealAt', type: 'uint64' }
+        ]
+      }
+    ]
+  },
+  {
+    type: 'function',
+    name: 'getMessagesRange',
     stateMutability: 'view',
     inputs: [
-      { name: 'limit', type: 'uint256' },
-      { name: 'offset', type: 'uint256' }
+      { name: 'start', type: 'uint256' },
+      { name: 'count', type: 'uint256' }
     ],
     outputs: [
       {
@@ -32,17 +51,30 @@ export const REVEAL_SOON_ABI = [
           { name: 'id', type: 'uint256' },
           { name: 'author', type: 'address' },
           { name: 'createdAt', type: 'uint64' },
-          { name: 'revealAt', type: 'uint64' },
-          { name: 'isRevealedNow', type: 'bool' }
+          { name: 'revealAt', type: 'uint64' }
         ]
       }
     ]
   },
   {
     type: 'function',
-    name: 'getMessagePayload',
+    name: 'getPublicText',
     stateMutability: 'view',
     inputs: [{ name: 'id', type: 'uint256' }],
     outputs: [{ name: '', type: 'string' }]
+  },
+  {
+    type: 'function',
+    name: 'getPrivateText',
+    stateMutability: 'view',
+    inputs: [{ name: 'id', type: 'uint256' }],
+    outputs: [{ name: '', type: 'string' }]
+  },
+  {
+    type: 'function',
+    name: 'isRevealed',
+    stateMutability: 'view',
+    inputs: [{ name: 'id', type: 'uint256' }],
+    outputs: [{ name: '', type: 'bool' }]
   }
 ];
