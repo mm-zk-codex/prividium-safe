@@ -21,7 +21,7 @@ contract PrivatePayInbox {
         uint256 ciphertextSize;
     }
 
-    address public immutable l2Messenger;
+    //address public immutable l2Messenger;
 
     mapping(address => bytes) private privKeyOf;
     Deposit[] public deposits;
@@ -34,8 +34,8 @@ contract PrivatePayInbox {
     error InvalidRecipient();
     error DepositAlreadyUsed();
 
-    constructor(address _l2Messenger) {
-        l2Messenger = _l2Messenger;
+    constructor() {
+        //l2Messenger = _l2Messenger;
     }
 
     /// @notice Store or rotate the caller's private key in Prividium private storage.
@@ -55,10 +55,15 @@ contract PrivatePayInbox {
         return key;
     }
 
-    function onL1Deposit(bytes32 depositId, bytes32 commitment, bytes calldata ciphertext) external payable {
-        if (msg.sender != l2Messenger) {
+    function onL1Deposit(
+        bytes32 depositId,
+        bytes32 commitment,
+        bytes calldata ciphertext
+    ) external payable {
+        // TODO: detect that this tx came from L1.
+        /*if (msg.sender != l2Messenger) {
             revert OnlyMessenger();
-        }
+        }*/
         if (usedDepositId[depositId]) {
             revert DepositAlreadyUsed();
         }
@@ -79,7 +84,10 @@ contract PrivatePayInbox {
         return deposits.length;
     }
 
-    function getRecentDeposits(uint256 limit, uint256 offset) external view returns (DepositHeader[] memory) {
+    function getRecentDeposits(
+        uint256 limit,
+        uint256 offset
+    ) external view returns (DepositHeader[] memory) {
         uint256 total = deposits.length;
         if (offset >= total || limit == 0) {
             return new DepositHeader[](0);
@@ -121,7 +129,7 @@ contract PrivatePayInbox {
             revert InvalidCommitment();
         }
         dep.claimed = true;
-        (bool success, ) = to.call{ value: dep.amount }('');
-        require(success, 'Transfer failed');
+        (bool success, ) = to.call{value: dep.amount}("");
+        require(success, "Transfer failed");
     }
 }

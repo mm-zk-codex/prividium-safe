@@ -163,3 +163,13 @@ cast send $L2_RICH_ADDRESS $RECIPIENT "transfer(address,uint256)" $RECIPIENT 100
 - ✅ Recipient decrypts locally and claims with secret.
 - ✅ Uses `prividium@0.1.8`.
 - ✅ Storage-based feed (no events dependency).
+
+
+## Deployment instructions
+
+```shell
+
+forge create -r http://localhost:5010 examples/privatepay-inbox/contracts/l1/KeyDirectory.sol:KeyDirectory --private-key 0x7726827caac94a7f9e1b160f7ea819f172f7b6f9d2a97f992c38edeab82d4110 --broadcast
+
+
+```

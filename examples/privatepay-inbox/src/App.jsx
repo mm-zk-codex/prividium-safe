@@ -254,7 +254,7 @@ export default function App() {
       return;
     }
     try {
-      await prividium.addNetworkToWallet();
+      //await prividium.addNetworkToWallet();
       await window.ethereum.request({
         method: 'wallet_requestPermissions',
         params: [{ eth_accounts: {} }]
@@ -350,7 +350,7 @@ export default function App() {
       const gasPrice = await l2PublicClient.getGasPrice();
       await prividium.authorizeTransaction({
         walletAddress,
-        contractAddress: to,
+        toAddress: to,
         nonce: Number(nonce),
         calldata: data
       });
