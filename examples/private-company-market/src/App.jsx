@@ -242,7 +242,8 @@ export default function App() {
   }, [address, isAuthorized, loadMarkets, marketContract]);
 
   useEffect(() => {
-    if (selectedMarketId && isAuthorized) {
+    if (selectedMarketId != null && isAuthorized) {
+      console.log("Loading details");
       loadMarketDetail(selectedMarketId);
     }
   }, [isAuthorized, loadMarketDetail, selectedMarketId]);
@@ -261,11 +262,12 @@ export default function App() {
   const handleAuthorizeWrite = async () => {
     setError('');
     try {
-      await prividium.authorize({
+      await prividium.authorize(/*{
         scopes: ['wallet:required', 'network:required']
-      });
-      await prividium.addNetworkToWallet();
+      }*/);
+      //await prividium.addNetworkToWallet();
       setIsAuthorized(true);
+      console.log("Is authorized");
     } catch (err) {
       console.error(err);
       setError('Write access sign-in failed.');

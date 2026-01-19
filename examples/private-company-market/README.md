@@ -93,3 +93,19 @@ const closeTime = Math.floor(Date.now() / 1000) + 60 * 60 * 24; // 24 hours from
 - ✅ Storage-based market listing
 - ✅ Simple, friendly UI
 - ✅ Uses `prividium@0.1.8`
+
+
+# Instalation
+
+
+On start, have to deploy contract:
+
+```shell
+forge create -r http://localhost:5050 examples/private-company-market/contracts/PrivateCompanyMarket.sol:PrivateCompanyMarket  --private-key 0x7726827caac94a7f9e1b160f7ea819f172f7b6f9d2a97f992c38edeab82d4110 --broadcast --constructor-args '[]' '[]' '[]
+```
+
+And call 'addMember' and 'addCreator' via script - as we don't support it in the frontend yet.
+
+
+Remember to configure the 'app' in the admin panel, and to set permissions for the contract.
+You might also want to get some ETH to your 'user' account, to pay for gas.
