@@ -141,6 +141,9 @@ input, select {
   gap: 8px;
 }
 
+.to-line { margin: 0; display: flex; gap: 6px; align-items: flex-start; }
+.hash-full { word-break: break-all; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+
 .overview-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(180px, 1fr));

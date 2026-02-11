@@ -21,6 +21,12 @@ const ERC20_TRANSFER_ABI = [{
   outputs: [{ name: '', type: 'bool' }]
 }];
 
+const PROPOSAL_MODES = [
+  { key: 'erc20', label: 'ERC-20 Transfer' },
+  { key: 'native', label: 'Base Token Transfer' },
+  { key: 'custom', label: 'Custom Call' }
+];
+
 async function api(path, options = {}) {
   const headers = {
     'Content-Type': 'application/json',
@@ -43,6 +49,23 @@ const getRoute = () => {
   return match ? { page: 'safe', safeAddress: match[1] } : { page: 'home' };
 };
 
+const getProposalTx = (proposal) => ({
+  to: proposal.to || proposal.tx?.to || '',
+  value: proposal.value || proposal.tx?.value || '0',
+  data: proposal.data || proposal.tx?.data || '0x',
+  operation: proposal.operation ?? proposal.tx?.operation ?? 0
+});
+
+const decodeErc20TransferData = (data) => {
+  if (!data || !data.startsWith('0xa9059cbb') || data.length < 138) return null;
+  const recipientHex = data.slice(34, 74);
+  const amountHex = data.slice(74, 138);
+  return {
+    recipient: `0x${recipientHex}`,
+    amount: BigInt(`0x${amountHex}`)
+  };
+};
+
 const getProposalStatus = (proposal, myAddress) => {
   const confirmations = proposal.confirmations || [];
   const my = myAddress?.toLowerCase();
@@ -62,6 +85,7 @@ const getProposalStatus = (proposal, myAddress) => {
 };
 
 const statusFilters = [
+  { key: 'all', label: 'All' },
   { key: 'needsSig', label: 'Needs your signature' },
   { key: 'waiting', label: 'Waiting for others' },
   { key: 'ready', label: 'Ready to execute' },
@@ -134,7 +158,7 @@ export default function App() {
   const [route, setRoute] = useState(getRoute());
   const [mainTab, setMainTab] = useState('safes');
   const [safeTab, setSafeTab] = useState('overview');
-  const [proposalFilter, setProposalFilter] = useState('needsSig');
+  const [proposalFilter, setProposalFilter] = useState('all');
   const [me, setMe] = useState(null);
   const [safes, setSafes] = useState([]);
   const [loadingSafes, setLoadingSafes] = useState(false);
@@ -150,13 +174,16 @@ export default function App() {
   const [createErrors, setCreateErrors] = useState({});
 
   const [proposalModalOpen, setProposalModalOpen] = useState(false);
+  const [proposalMode, setProposalMode] = useState('erc20');
   const [selectedToken, setSelectedToken] = useState('');
   const [recipient, setRecipient] = useState('');
   const [amount, setAmount] = useState('');
+  const [nativeRecipient, setNativeRecipient] = useState('');
+  const [nativeAmount, setNativeAmount] = useState('');
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [customTo, setCustomTo] = useState('');
   const [customValue, setCustomValue] = useState('0');
-  const [customData, setCustomData] = useState('');
+  const [customData, setCustomData] = useState('0x');
   const [customOperation, setCustomOperation] = useState('0');
   const [proposalError, setProposalError] = useState('');
 
@@ -283,42 +310,71 @@ export default function App() {
   const selectedTokenConfig = chainTokens.find((token) => token.symbol === selectedToken);
 
   const proposalPreview = useMemo(() => {
-    if (!selectedTokenConfig || !recipient || !amount) return 'Fill in token, recipient, and amount.';
-    return `Send ${amount} ${selectedTokenConfig.symbol} to ${shorten(recipient)}`;
-  }, [selectedTokenConfig, recipient, amount]);
+    if (proposalMode === 'erc20') {
+      if (!selectedTokenConfig || !recipient || !amount) return 'Fill in token, recipient, and amount.';
+      return `Send ${amount} ${selectedTokenConfig.symbol} to ${recipient}`;
+    }
+    if (proposalMode === 'native') {
+      if (!nativeRecipient || !nativeAmount) return 'Fill in recipient and base token amount.';
+      return `Send ${nativeAmount} ${prividium.chain.nativeCurrency.symbol} to ${nativeRecipient}`;
+    }
+    if (!customTo) return 'Fill in target address and optional calldata.';
+    return `Call ${customTo} (${customData || '0x'})`;
+  }, [proposalMode, selectedTokenConfig, recipient, amount, nativeRecipient, nativeAmount, customTo, customData]);
 
   const buildProposalTx = () => {
-    if (!selectedTokenConfig) throw new Error('Please select a token');
-    if (!isAddress(recipient)) throw new Error('Recipient must be a valid address');
-    if (!amount || Number(amount) <= 0) throw new Error('Amount must be greater than 0');
+    if (proposalMode === 'erc20') {
+      if (!selectedTokenConfig) throw new Error('Please select a token');
+      if (!isAddress(recipient)) throw new Error('Recipient must be a valid address');
+      if (!amount || Number(amount) <= 0) throw new Error('Amount must be greater than 0');
 
-    const parsedAmount = parseUnits(amount, selectedTokenConfig.decimals);
-    const data = encodeFunctionData({
-      abi: ERC20_TRANSFER_ABI,
-      functionName: 'transfer',
-      args: [recipient, parsedAmount]
-    });
+      const parsedAmount = parseUnits(amount, selectedTokenConfig.decimals);
+      const transferData = encodeFunctionData({
+        abi: ERC20_TRANSFER_ABI,
+        functionName: 'transfer',
+        args: [recipient, parsedAmount]
+      });
 
-    let tx = {
-      to: selectedTokenConfig.address,
-      value: '0',
-      data,
-      operation: 0
-    };
+      let tx = {
+        to: selectedTokenConfig.address,
+        value: '0',
+        data: transferData,
+        operation: 0
+      };
 
-    if (advancedOpen) {
-      tx = {
-        to: customTo || tx.to,
-        value: customValue || tx.value,
-        data: customData || tx.data,
-        operation: Number(customOperation || tx.operation)
+      if (advancedOpen) {
+        tx = {
+          to: customTo || tx.to,
+          value: customValue || tx.value,
+          data: customData || tx.data,
+          operation: Number(customOperation || tx.operation)
+        };
+      }
+
+      if (!isAddress(tx.to)) throw new Error('Transaction target must be a valid address');
+      if (!/^0x([0-9a-fA-F]{2})*$/.test(tx.data || '')) throw new Error('Transaction data must be valid hex');
+      return tx;
+    }
+
+    if (proposalMode === 'native') {
+      if (!isAddress(nativeRecipient)) throw new Error('Recipient must be a valid address');
+      if (!nativeAmount || Number(nativeAmount) <= 0) throw new Error('Amount must be greater than 0');
+      return {
+        to: nativeRecipient,
+        value: parseUnits(nativeAmount, prividium.chain.nativeCurrency.decimals).toString(),
+        data: '0x',
+        operation: 0
       };
     }
 
-    if (!isAddress(tx.to)) throw new Error('Transaction target must be a valid address');
-    if (!/^0x([0-9a-fA-F]{2})*$/.test(tx.data || '')) throw new Error('Transaction data must be valid hex');
-
-    return tx;
+    if (!isAddress(customTo)) throw new Error('Target must be a valid address');
+    if (!/^0x([0-9a-fA-F]{2})*$/.test(customData || '')) throw new Error('Calldata must be valid hex');
+    return {
+      to: customTo,
+      value: customValue || '0',
+      data: customData || '0x',
+      operation: Number(customOperation || 0)
+    };
   };
 
   const propose = async () => {
@@ -332,6 +388,8 @@ export default function App() {
     setProposalModalOpen(false);
     setAmount('');
     setRecipient('');
+    setNativeAmount('');
+    setNativeRecipient('');
     const txs = await api(`/v1/safes/${route.safeAddress}/transactions`);
     setProposals(txs.results || []);
   };
@@ -378,7 +436,7 @@ export default function App() {
     status: getProposalStatus(proposal, me?.address)
   })), [proposals, me?.address]);
 
-  const filteredProposals = categorized.filter((item) => item.status.key === proposalFilter);
+  const filteredProposals = categorized.filter((item) => proposalFilter === 'all' || item.status.key === proposalFilter);
 
   const onCopy = async (value) => {
     await navigator.clipboard.writeText(value);
@@ -386,18 +444,16 @@ export default function App() {
   };
 
   const summaryFromProposal = (proposal) => {
-    const toAddress = proposal.to || proposal.tx?.to || '';
-    const data = proposal.data || proposal.tx?.data || '';
-    const token = chainTokens.find((tk) => tk.address.toLowerCase() === toAddress.toLowerCase());
-    if (token && data.startsWith('0xa9059cbb')) {
-      try {
-        const rawAmount = BigInt(`0x${data.slice(74, 138)}`);
-        return `Transfer ${formatUnits(rawAmount, token.decimals)} ${token.symbol}`;
-      } catch {
-        return 'Token transfer';
-      }
+    const tx = getProposalTx(proposal);
+    const token = chainTokens.find((tk) => tk.address.toLowerCase() === tx.to.toLowerCase());
+    const decoded = decodeErc20TransferData(tx.data);
+    if (token && decoded) {
+      return `Transfer ${formatUnits(decoded.amount, token.decimals)} ${token.symbol} to ${decoded.recipient}`;
     }
-    return `To ${shorten(toAddress)}`;
+    if (tx.data === '0x') {
+      return `Transfer ${formatUnits(BigInt(tx.value || '0'), prividium.chain.nativeCurrency.decimals)} ${prividium.chain.nativeCurrency.symbol}`;
+    }
+    return `Contract call (operation ${tx.operation})`;
   };
 
   return (
@@ -523,6 +579,7 @@ export default function App() {
                   {loadingProposals ? <Skeleton lines={5} /> : filteredProposals.length === 0 ? <p className="muted">No proposals in this category.</p> : (
                     <div className="stack">
                       {filteredProposals.map(({ proposal, status }) => {
+                        const tx = getProposalTx(proposal);
                         const isNeedsSig = status.key === 'needsSig';
                         const isReady = status.key === 'ready';
                         return (
@@ -532,6 +589,7 @@ export default function App() {
                               <span className="muted">{proposal.confirmations?.length || 0}/{proposal.confirmationsRequired} confirmations</span>
                             </div>
                             <p>{summaryFromProposal(proposal)}</p>
+                            <p className="to-line"><span className="muted">To:</span> <span className="hash-full">{tx.to}</span></p>
                             <p className="ellipsis muted">{proposal.safeTxHash}</p>
                             <div className="inline">
                               {isNeedsSig && <Button variant="secondary" onClick={() => confirm(proposal).catch((e) => addToast(e.message, 'error'))}>Sign</Button>}
@@ -557,25 +615,53 @@ export default function App() {
       {proposalModalOpen && (
         <div className="modal-backdrop" onClick={() => setProposalModalOpen(false)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <h3>New ERC-20 Transfer Proposal</h3>
-            <label>Token</label>
-            <select value={selectedToken} onChange={(e) => setSelectedToken(e.target.value)}>
-              {chainTokens.map((token) => (
-                <option value={token.symbol} key={token.symbol}>{token.symbol} · {token.name}</option>
-              ))}
-            </select>
-            <label>Recipient</label>
-            <input value={recipient} onChange={(e) => setRecipient(e.target.value)} placeholder="0x..." />
-            <label>Amount</label>
-            <input value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0.0" />
+            <h3>New Proposal</h3>
+            <Tabs compact value={proposalMode} onChange={setProposalMode} tabs={PROPOSAL_MODES} />
 
-            <button className="link" onClick={() => setAdvancedOpen((v) => !v)}>Advanced {advancedOpen ? '▲' : '▼'}</button>
-            {advancedOpen && (
+            {proposalMode === 'erc20' && (
+              <>
+                <label>Token</label>
+                <select value={selectedToken} onChange={(e) => setSelectedToken(e.target.value)}>
+                  {chainTokens.map((token) => (
+                    <option value={token.symbol} key={token.symbol}>{token.symbol} · {token.name}</option>
+                  ))}
+                </select>
+                <label>Recipient</label>
+                <input value={recipient} onChange={(e) => setRecipient(e.target.value)} placeholder="0x..." />
+                <label>Amount</label>
+                <input value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0.0" />
+
+                <button className="link" onClick={() => setAdvancedOpen((v) => !v)}>Advanced {advancedOpen ? '▲' : '▼'}</button>
+                {advancedOpen && (
+                  <div className="stack">
+                    <input value={customTo} onChange={(e) => setCustomTo(e.target.value)} placeholder="custom to" />
+                    <input value={customValue} onChange={(e) => setCustomValue(e.target.value)} placeholder="value (wei)" />
+                    <input value={customData} onChange={(e) => setCustomData(e.target.value)} placeholder="data hex" />
+                    <input value={customOperation} onChange={(e) => setCustomOperation(e.target.value)} placeholder="operation" />
+                  </div>
+                )}
+              </>
+            )}
+
+            {proposalMode === 'native' && (
+              <>
+                <label>Recipient</label>
+                <input value={nativeRecipient} onChange={(e) => setNativeRecipient(e.target.value)} placeholder="0x..." />
+                <label>Amount ({prividium.chain.nativeCurrency.symbol})</label>
+                <input value={nativeAmount} onChange={(e) => setNativeAmount(e.target.value)} placeholder="0.0" />
+              </>
+            )}
+
+            {proposalMode === 'custom' && (
               <div className="stack">
-                <input value={customTo} onChange={(e) => setCustomTo(e.target.value)} placeholder="custom to" />
-                <input value={customValue} onChange={(e) => setCustomValue(e.target.value)} placeholder="value (wei)" />
-                <input value={customData} onChange={(e) => setCustomData(e.target.value)} placeholder="data hex" />
-                <input value={customOperation} onChange={(e) => setCustomOperation(e.target.value)} placeholder="operation" />
+                <label>Target</label>
+                <input value={customTo} onChange={(e) => setCustomTo(e.target.value)} placeholder="0x..." />
+                <label>Value (wei)</label>
+                <input value={customValue} onChange={(e) => setCustomValue(e.target.value)} placeholder="0" />
+                <label>Data (hex)</label>
+                <input value={customData} onChange={(e) => setCustomData(e.target.value)} placeholder="0x" />
+                <label>Operation</label>
+                <input value={customOperation} onChange={(e) => setCustomOperation(e.target.value)} placeholder="0" />
               </div>
             )}
 
