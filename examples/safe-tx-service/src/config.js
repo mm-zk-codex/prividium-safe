@@ -18,5 +18,7 @@ export const config = {
   safeFactoryAddress: process.env.SAFE_FACTORY_ADDRESS || null,
   safeSingletonAddress: process.env.SAFE_SINGLETON_ADDRESS || null,
   allowAdminSync: process.env.ALLOW_ADMIN_SYNC === 'true',
-  syncPollMs: Number(process.env.SYNC_POLL_MS || 0)
+  syncPollMs: Number(process.env.SYNC_POLL_MS || 0),
+  nativeSymbol: process.env.NATIVE_SYMBOL || 'ETH',
+  nativeDecimals: Number(process.env.NATIVE_DECIMALS || 18)
 };

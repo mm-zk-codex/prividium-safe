@@ -30,6 +30,19 @@ const walletClient = typeof window !== 'undefined' && window.ethereum
 
 const shorten = (value = '', left = 6, right = 4) => (value.length > 14 ? `${value.slice(0, left)}...${value.slice(-right)}` : value);
 
+const formatTokenAmount = (raw, decimals, max = 6) => {
+  const value = Number(raw || 0) / 10 ** Number(decimals || 0);
+  if (!Number.isFinite(value)) return '0';
+  return value.toLocaleString(undefined, { maximumFractionDigits: max });
+};
+
+const formatTimestamp = (iso) => {
+  if (!iso) return '—';
+  const parsed = new Date(iso);
+  if (Number.isNaN(parsed.getTime())) return '—';
+  return parsed.toLocaleString();
+};
+
 const getRoute = () => {
   const match = window.location.pathname.match(/^\/safes\/(0x[a-fA-F0-9]{40})$/);
   return match ? { page: 'safe', safeAddress: match[1] } : { page: 'home' };
@@ -143,6 +156,13 @@ export default function App() {
   const [safeDetail, setSafeDetail] = useState(null);
   const [proposals, setProposals] = useState([]);
   const [tokens, setTokens] = useState([]);
+  const [balances, setBalances] = useState(null);
+  const [loadingBalances, setLoadingBalances] = useState(false);
+  const [addressBook, setAddressBook] = useState([]);
+  const [loadingAddressBook, setLoadingAddressBook] = useState(false);
+  const [addressBookLabel, setAddressBookLabel] = useState('');
+  const [addressBookAddress, setAddressBookAddress] = useState('');
+  const [editingEntryId, setEditingEntryId] = useState('');
   const [registerInput, setRegisterInput] = useState('');
   const [toasts, setToasts] = useState([]);
 
@@ -153,6 +173,7 @@ export default function App() {
   const [proposalModalOpen, setProposalModalOpen] = useState(false);
   const [proposalMode, setProposalMode] = useState('erc20');
   const [selectedToken, setSelectedToken] = useState('');
+  const [selectedAddressBookEntryId, setSelectedAddressBookEntryId] = useState('');
   const [recipient, setRecipient] = useState('');
   const [amount, setAmount] = useState('');
   const [nativeRecipient, setNativeRecipient] = useState('');
@@ -191,20 +212,48 @@ export default function App() {
     }
   };
 
+  const loadSafeBalances = async (safeAddress) => {
+    setLoadingBalances(true);
+    try {
+      const data = await api(`/v1/safes/${safeAddress}/balances`);
+      setBalances(data);
+    } finally {
+      setLoadingBalances(false);
+    }
+  };
+
+  const loadAddressBook = async (safeAddress) => {
+    setLoadingAddressBook(true);
+    try {
+      const data = await api(`/v1/safes/${safeAddress}/address-book`);
+      setAddressBook(data.entries || []);
+    } finally {
+      setLoadingAddressBook(false);
+    }
+  };
+
   const loadSafeData = async (safeAddress) => {
     if (!safeAddress) return;
     setLoadingSafe(true);
     setLoadingProposals(true);
+    setLoadingBalances(true);
+    setLoadingAddressBook(true);
     try {
-      const [safe, txs] = await Promise.all([
+      const [safe, txs, balanceData, addressBookData] = await Promise.all([
         api(`/v1/safes/${safeAddress}`),
-        api(`/v1/safes/${safeAddress}/transactions`)
+        api(`/v1/safes/${safeAddress}/transactions`),
+        api(`/v1/safes/${safeAddress}/balances`),
+        api(`/v1/safes/${safeAddress}/address-book`)
       ]);
       setSafeDetail(safe.safe);
       setProposals(txs.results || []);
+      setBalances(balanceData);
+      setAddressBook(addressBookData.entries || []);
     } finally {
       setLoadingSafe(false);
       setLoadingProposals(false);
+      setLoadingBalances(false);
+      setLoadingAddressBook(false);
     }
   };
 
@@ -233,6 +282,8 @@ export default function App() {
     } else {
       setSafeDetail(null);
       setProposals([]);
+      setBalances(null);
+      setAddressBook([]);
     }
   }, [route.page, route.safeAddress]);
 
@@ -241,6 +292,14 @@ export default function App() {
       setSelectedToken(tokens[0].address);
     }
   }, [tokens, selectedToken]);
+
+  useEffect(() => {
+    if (!selectedAddressBookEntryId) return;
+    const selected = addressBook.find((entry) => entry.id === selectedAddressBookEntryId);
+    if (selected) {
+      setRecipient(selected.address);
+    }
+  }, [selectedAddressBookEntryId, addressBook]);
 
   useEffect(() => {
     setCreateErrors(getCreateErrors(owners, threshold).errors);
@@ -373,6 +432,7 @@ export default function App() {
     setProposalModalOpen(false);
     setAmount('');
     setRecipient('');
+    setSelectedAddressBookEntryId('');
     setNativeAmount('');
     setNativeRecipient('');
     const txs = await api(`/v1/safes/${route.safeAddress}/transactions`);
@@ -414,7 +474,51 @@ export default function App() {
     addToast('Executed');
     const txs = await api(`/v1/safes/${route.safeAddress}/transactions`);
     setProposals(txs.results || []);
+    await loadAddressBook(route.safeAddress);
   };
+
+  const saveAddressBookEntry = async () => {
+    if (!addressBookLabel.trim()) throw new Error('Label is required');
+    if (!isAddress(addressBookAddress)) throw new Error('Address must be a valid 0x address');
+
+    if (editingEntryId) {
+      await api(`/v1/safes/${route.safeAddress}/address-book/${editingEntryId}`, {
+        method: 'PUT',
+        body: JSON.stringify({ label: addressBookLabel, address: addressBookAddress })
+      });
+      addToast('Address book entry updated');
+    } else {
+      await api(`/v1/safes/${route.safeAddress}/address-book`, {
+        method: 'POST',
+        body: JSON.stringify({ label: addressBookLabel, address: addressBookAddress })
+      });
+      addToast('Address book entry created');
+    }
+    setAddressBookLabel('');
+    setAddressBookAddress('');
+    setEditingEntryId('');
+    await loadAddressBook(route.safeAddress);
+  };
+
+  const beginEditAddressBookEntry = (entry) => {
+    setEditingEntryId(entry.id);
+    setAddressBookLabel(entry.label);
+    setAddressBookAddress(entry.address);
+  };
+
+  const removeAddressBookEntry = async (entryId) => {
+    await api(`/v1/safes/${route.safeAddress}/address-book/${entryId}`, { method: 'DELETE' });
+    addToast('Address book entry deleted');
+    await loadAddressBook(route.safeAddress);
+  };
+
+  const openProposalWithToken = (tokenAddress) => {
+    setProposalMode('erc20');
+    setSelectedToken(tokenAddress);
+    setProposalModalOpen(true);
+  };
+
+  const addressBookByAddress = useMemo(() => new Map(addressBook.map((entry) => [entry.address.toLowerCase(), entry])), [addressBook]);
 
   const categorized = useMemo(() => proposals.map((proposal) => ({
     proposal,
@@ -429,6 +533,8 @@ export default function App() {
   };
 
   const summaryFromProposal = (proposal) => {
+    const tx = getProposalTx(proposal);
+    const toEntry = addressBookByAddress.get((tx.to || '').toLowerCase());
     if (proposal.summary?.type === 'erc20-transfer') {
       return `Transfer ${proposal.summary.amount} ${proposal.summary.tokenSymbol} to ${proposal.summary.recipient}`;
     }
@@ -436,9 +542,8 @@ export default function App() {
       return 'Custom calldata';
     }
 
-    const tx = getProposalTx(proposal);
     if (tx.data === '0x') {
-      return `Transfer ${tx.value || '0'} ${prividium.chain.nativeCurrency.symbol}`;
+      return `Transfer ${tx.value || '0'} ${prividium.chain.nativeCurrency.symbol}${toEntry ? ` to ${toEntry.label}` : ''}`;
     }
     return `Contract call (operation ${tx.operation})`;
   };
@@ -529,19 +634,93 @@ export default function App() {
               <Tabs
                 value={safeTab}
                 onChange={setSafeTab}
-                tabs={[{ key: 'overview', label: 'Overview' }, { key: 'proposals', label: 'Proposals' }, { key: 'owners', label: 'Owners' }]}
+                tabs={[{ key: 'overview', label: 'Overview' }, { key: 'proposals', label: 'Proposals' }, { key: 'address-book', label: 'Address Book' }, { key: 'owners', label: 'Owners' }]}
               />
 
               {safeTab === 'overview' && (
-                <Card title="Safe Overview">
-                  {loadingSafe ? <Skeleton lines={4} /> : safeDetail ? (
-                    <div className="overview-grid">
-                      <div><span className="muted">Address</span><p>{safeDetail.safeAddress}</p></div>
-                      <div><span className="muted">Threshold</span><p>{safeDetail.threshold}/{safeDetail.owners?.length}</p></div>
-                      <div><span className="muted">Nonce</span><p>{safeDetail.nonce}</p></div>
-                      <div><span className="muted">Owners</span><p>{safeDetail.owners?.length}</p></div>
+                <div className="stack">
+                  <Card title="Safe Overview">
+                    {loadingSafe ? <Skeleton lines={4} /> : safeDetail ? (
+                      <div className="overview-grid">
+                        <div><span className="muted">Address</span><p>{safeDetail.safeAddress}</p></div>
+                        <div><span className="muted">Threshold</span><p>{safeDetail.threshold}/{safeDetail.owners?.length}</p></div>
+                        <div><span className="muted">Nonce</span><p>{safeDetail.nonce}</p></div>
+                        <div><span className="muted">Owners</span><p>{safeDetail.owners?.length}</p></div>
+                      </div>
+                    ) : <p className="muted">Safe not found.</p>}
+                  </Card>
+
+                  <Card
+                    title="Balances"
+                    action={<Button variant="secondary" onClick={() => loadSafeBalances(route.safeAddress).catch((e) => addToast(e.message, 'error'))}>Refresh</Button>}
+                  >
+                    {loadingBalances ? <Skeleton lines={4} /> : !balances ? <p className="muted">No balance data yet.</p> : (
+                      <div className="stack">
+                        <div className="balance-row">
+                          <strong>{balances.native.symbol}</strong>
+                          <span>{formatTokenAmount(balances.native.balance, balances.native.decimals)} {balances.native.symbol}</span>
+                        </div>
+                        {(balances.erc20 || []).map((token) => (
+                          <div key={token.address} className="balance-row">
+                            <div>
+                              <strong>{token.symbol}</strong>
+                              <p className="muted token-meta">{token.name}</p>
+                            </div>
+                            <div className="inline">
+                              <span>{formatTokenAmount(token.balance, token.decimals)} {token.symbol}</span>
+                              <Button variant="secondary" onClick={() => openProposalWithToken(token.address)}>Send</Button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </Card>
+                </div>
+              )}
+
+              {safeTab === 'address-book' && (
+                <Card title="Address Book">
+                  <p className="muted">Only Safe owners can edit address book entries.</p>
+                  <p className="muted">We display when an entry was last changed and how often the Safe has sent transactions to it.</p>
+
+                  <div className="grid two-col">
+                    <div className="stack">
+                      <label>Label</label>
+                      <input value={addressBookLabel} onChange={(e) => setAddressBookLabel(e.target.value)} placeholder="Treasury" />
                     </div>
-                  ) : <p className="muted">Safe not found.</p>}
+                    <div className="stack">
+                      <label>Address</label>
+                      <input value={addressBookAddress} onChange={(e) => setAddressBookAddress(e.target.value)} placeholder="0x..." />
+                    </div>
+                  </div>
+
+                  <div className="inline">
+                    <Button onClick={() => saveAddressBookEntry().catch((e) => addToast(e.message, 'error'))}>{editingEntryId ? 'Update entry' : 'Add entry'}</Button>
+                    {editingEntryId && <Button variant="secondary" onClick={() => { setEditingEntryId(''); setAddressBookLabel(''); setAddressBookAddress(''); }}>Cancel edit</Button>}
+                    <Button variant="secondary" onClick={() => loadAddressBook(route.safeAddress).catch((e) => addToast(e.message, 'error'))}>Refresh</Button>
+                  </div>
+
+                  {loadingAddressBook ? <Skeleton lines={4} /> : addressBook.length === 0 ? <p className="muted">No entries yet.</p> : (
+                    <div className="stack">
+                      {addressBook.map((entry) => (
+                        <div key={entry.id} className="proposal-card">
+                          <div className="proposal-head">
+                            <strong>{entry.label}</strong>
+                            <span className="muted">Sent {entry.txCount} txs</span>
+                          </div>
+                          <div className="inline">
+                            <span className="hash-full">{entry.address}</span>
+                            <button className="icon-btn" onClick={() => onCopy(entry.address).catch(() => addToast('Copy failed', 'error'))}>Copy</button>
+                          </div>
+                          <p className="muted">Last changed: {formatTimestamp(entry.lastChangedAt)} by {shorten(entry.lastChangedBy)}</p>
+                          <div className="inline">
+                            <Button variant="secondary" onClick={() => beginEditAddressBookEntry(entry)}>Edit</Button>
+                            <Button variant="secondary" onClick={() => removeAddressBookEntry(entry.id).catch((e) => addToast(e.message, 'error'))}>Delete</Button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </Card>
               )}
 
@@ -577,7 +756,7 @@ export default function App() {
                               <span className="muted">{proposal.confirmations?.length || 0}/{proposal.confirmationsRequired} confirmations</span>
                             </div>
                             <p>{summaryFromProposal(proposal)}</p>
-                            <p className="to-line"><span className="muted">To:</span> <span className="hash-full">{tx.to}</span></p>
+                            <p className="to-line"><span className="muted">To:</span> <span className="hash-full">{addressBookByAddress.get((tx.to || '').toLowerCase()) ? `${addressBookByAddress.get((tx.to || '').toLowerCase()).label} (${shorten(tx.to)})` : tx.to}</span></p>
                             <p className="ellipsis muted">{proposal.safeTxHash}</p>
                             <div className="inline">
                               {isNeedsSig && <Button variant="secondary" onClick={() => confirm(proposal).catch((e) => addToast(e.message, 'error'))}>Sign</Button>}
@@ -615,7 +794,24 @@ export default function App() {
                   ))}
                 </select>
                 <label>Recipient</label>
-                <input value={recipient} onChange={(e) => setRecipient(e.target.value)} placeholder="0x..." />
+                <select value={selectedAddressBookEntryId} onChange={(e) => {
+                  setSelectedAddressBookEntryId(e.target.value);
+                  if (!e.target.value) setRecipient('');
+                }}>
+                  <option value="">Enter raw address</option>
+                  {addressBook.map((entry) => (
+                    <option key={entry.id} value={entry.id}>{entry.label} · {shorten(entry.address)}</option>
+                  ))}
+                </select>
+                <input
+                  value={recipient}
+                  onChange={(e) => {
+                    setSelectedAddressBookEntryId('');
+                    setRecipient(e.target.value);
+                  }}
+                  placeholder="0x..."
+                />
+                {selectedAddressBookEntryId && <p className="muted">Using address book recipient: {addressBook.find((entry) => entry.id === selectedAddressBookEntryId)?.label}</p>}
                 <label>Amount {selectedTokenConfig ? `(${selectedTokenConfig.decimals} decimals)` : ''}</label>
                 <input value={amount} onChange={(e) => setAmount(e.target.value)} placeholder={selectedTokenConfig ? `0.${'0'.repeat(Math.min(selectedTokenConfig.decimals, 6))}` : '0.0'} />
 
