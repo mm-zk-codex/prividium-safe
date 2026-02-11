@@ -4,7 +4,8 @@ function extractAddress(payload) {
     payload?.walletAddress,
     payload?.wallet?.address,
     payload?.user?.address,
-    payload?.user?.walletAddress
+    payload?.user?.walletAddress,
+    payload?.wallets?.[0]?.walletAddress
   ];
   return candidates.find((v) => typeof v === 'string' && v.startsWith('0x'))?.toLowerCase() || null;
 }
@@ -22,7 +23,7 @@ export async function requireAuth(req, permissionsApiBaseUrl) {
   }
   const token = auth.slice('bearer '.length).trim();
 
-  const response = await fetch(`${permissionsApiBaseUrl}/api/auth/me`, {
+  const response = await fetch(`${permissionsApiBaseUrl}/api/profiles/me`, {
     headers: { Authorization: `Bearer ${token}` }
   });
   if (!response.ok) {

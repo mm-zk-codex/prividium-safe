@@ -50,7 +50,7 @@ const SAFE_FACTORY_EVENTS_ABI = [
     name: 'ProxyCreation',
     anonymous: false,
     inputs: [
-      { indexed: false, name: 'proxy', type: 'address' },
+      { indexed: true, name: 'proxy', type: 'address' },
       { indexed: false, name: 'singleton', type: 'address' }
     ]
   }
@@ -69,7 +69,7 @@ const SAFE_SETUP_ABI = [
       { name: 'fallbackHandler', type: 'address' },
       { name: 'paymentToken', type: 'address' },
       { name: 'payment', type: 'uint256' },
-      { name: 'paymentReceiver', type: 'address payable' }
+      { name: 'paymentReceiver', type: 'address' }
     ],
     outputs: []
   }
@@ -185,8 +185,9 @@ export async function createSafe({ owners, threshold }) {
   const proxyLog = receipt.logs
     .map((log) => {
       try {
-        return decodeEventLog({ abi: SAFE_FACTORY_EVENTS_ABI, data: log.data, topics: log.topics });
-      } catch {
+        const decoded = decodeEventLog({ abi: SAFE_FACTORY_EVENTS_ABI, data: log.data, topics: log.topics });
+        return decoded;
+      } catch (error) {
         return null;
       }
     })
@@ -201,7 +202,7 @@ export async function createSafe({ owners, threshold }) {
 
 function rowToProposal(row, confirmations) {
   const tx = {
-    to: row.to,
+    to: row.recipient,
     value: row.value,
     data: row.data,
     operation: row.operation,
@@ -264,7 +265,7 @@ export async function createProposal({ safeAddress, createdBy, tx }) {
   const id = uuidv4();
 
   await pool.query(
-    `INSERT INTO proposals (id, safe_address, to, value, data, operation, nonce, safe_tx_hash, created_by)
+    `INSERT INTO proposals (id, safe_address, recipient, value, data, operation, nonce, safe_tx_hash, created_by)
      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
      ON CONFLICT (safe_tx_hash) DO NOTHING`,
     [id, safe.safeAddress, proposalTx.to, proposalTx.value, proposalTx.data, proposalTx.operation, proposalTx.nonce, safeTxHash, normalizeAddress(createdBy)]
@@ -280,7 +281,10 @@ export async function addConfirmation({ safeTxHash, ownerAddress, signature }) {
     err.status = 404;
     throw err;
   }
+  console.log('hash to sign', proposal.safeTxHash);
   const recovered = await recoverAddress({ hash: proposal.safeTxHash, signature });
+  console.log('Recovered address from signature', recovered);
+  console.log('Owner address', ownerAddress);
   if (normalizeAddress(recovered) !== normalizeAddress(ownerAddress)) {
     const err = new Error('Signature does not match authenticated user');
     err.status = 400;

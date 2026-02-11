@@ -42,7 +42,7 @@ export default function App() {
   };
 
   useEffect(() => {
-    refresh().catch(() => {});
+    refresh().catch(() => { });
   }, []);
 
   useEffect(() => {

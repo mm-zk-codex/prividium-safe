@@ -14,7 +14,7 @@ CREATE TABLE IF NOT EXISTS safe_owners (
 CREATE TABLE IF NOT EXISTS proposals (
   id UUID PRIMARY KEY,
   safe_address TEXT NOT NULL REFERENCES safes(safe_address) ON DELETE CASCADE,
-  to TEXT NOT NULL,
+  recipient TEXT NOT NULL,
   value TEXT NOT NULL,
   data TEXT NOT NULL,
   operation INT NOT NULL,

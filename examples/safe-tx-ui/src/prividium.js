@@ -14,7 +14,7 @@ export const prividium = createPrividiumChain({
   chain,
   rpcUrl: import.meta.env.VITE_RPC_URL,
   authBaseUrl: import.meta.env.VITE_AUTH_BASE_URL,
-  permissionsApiBaseUrl: import.meta.env.VITE_PERMISSIONS_API_BASE_URL,
+  prividiumApiBaseUrl: import.meta.env.VITE_PERMISSIONS_API_BASE_URL,
   redirectUrl: import.meta.env.VITE_REDIRECT_URL,
   onAuthExpiry: () => window.location.reload()
 });
