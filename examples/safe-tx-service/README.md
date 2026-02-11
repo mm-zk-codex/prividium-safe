@@ -46,7 +46,16 @@ This demo uses **raw `eth_sign`/EIP-191 style signatures over `safeTxHash` bytes
 ## Environment
 
 ```bash
-
+DATABASE_URL=postgres://...
+PRIVIDIUM_RPC_URL=https://<prividium-rpc>/rpc
+PRIVIDIUM_PERMISSIONS_API_BASE_URL=https://<permissions-api-base>
+SERVICE_PRIVATE_KEY=0x...
+CHAIN_ID=7777
+PORT=4010
+SAFE_FACTORY_ADDRESS=0x...        # required for POST /v1/safes create
+SAFE_SINGLETON_ADDRESS=0x...      # required for POST /v1/safes create
+ALLOW_ADMIN_SYNC=false
+SYNC_POLL_MS=0
 ```
 
 ## Run
