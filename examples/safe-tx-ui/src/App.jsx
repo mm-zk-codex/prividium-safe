@@ -92,7 +92,35 @@ export default function App() {
   const confirm = async (proposal) => {
     if (!walletClient) throw new Error('No injected wallet found');
     const [address] = await walletClient.getAddresses();
-    const signature = await walletClient.signMessage({ account: address, message: { raw: proposal.safeTxHash } });
+    const typedData = await api(`/v1/transactions/${proposal.safeTxHash}/typed-data`);
+    const typedMessage = {
+      ...typedData.message,
+      value: BigInt(typedData.message.value),
+      safeTxGas: BigInt(typedData.message.safeTxGas),
+      baseGas: BigInt(typedData.message.baseGas),
+      gasPrice: BigInt(typedData.message.gasPrice),
+      nonce: BigInt(typedData.message.nonce)
+    };
+
+    let signature;
+    try {
+      signature = await walletClient.signTypedData({
+        account: address,
+        domain: typedData.domain,
+        types: typedData.types,
+        primaryType: typedData.primaryType,
+        message: typedMessage
+      });
+    } catch (error) {
+      if (error?.code === 4001) {
+        throw new Error('You rejected the typed data signature request');
+      }
+      if (error?.code === -32601 || /typed data|signTypedData/i.test(error?.message || '')) {
+        throw new Error('Wallet does not support EIP-712 typed data signing');
+      }
+      throw error;
+    }
+
     await api(`/v1/transactions/${proposal.safeTxHash}/confirmations`, {
       method: 'POST',
       body: JSON.stringify({ signature })
@@ -160,7 +188,7 @@ export default function App() {
                   <div>{p.safeTxHash}</div>
                   <div>{p.confirmations.length}/{p.confirmationsRequired} confirmations</div>
                   <div>Executable: {String(p.executable)}</div>
-                  <button onClick={() => confirm(p)}>Sign</button>
+                  <button onClick={() => confirm(p)}>Sign (EIP-712)</button>
                   <button disabled={!p.executable} onClick={() => execute(p)}>Execute</button>
                 </div>
               ))}
