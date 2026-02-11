@@ -1,9 +1,24 @@
-import { encodeFunctionData, getAddress, concatHex, createPublicClient, createWalletClient, decodeEventLog, http, recoverTypedDataAddress, hashTypedData } from 'viem';
+import {
+  encodeFunctionData,
+  getAddress,
+  concatHex,
+  createPublicClient,
+  createWalletClient,
+  decodeEventLog,
+  decodeFunctionData,
+  formatUnits,
+  http,
+  isAddress,
+  parseUnits,
+  recoverTypedDataAddress,
+  hashTypedData
+} from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 import { config } from './config.js';
 import { pool } from './db.js';
 import { v4 as uuidv4 } from 'uuid';
 import { authFetch } from './prividiumAuth.js';
+import { getTokenMetadata, isSupportedToken } from './tokens.js';
 
 const SAFE_ABI = [
   { type: 'function', name: 'getOwners', stateMutability: 'view', inputs: [], outputs: [{ type: 'address[]' }] },
@@ -74,6 +89,17 @@ const SAFE_SETUP_ABI = [
     outputs: []
   }
 ];
+
+const ERC20_TRANSFER_ABI = [{
+  type: 'function',
+  name: 'transfer',
+  stateMutability: 'nonpayable',
+  inputs: [
+    { name: 'to', type: 'address' },
+    { name: 'value', type: 'uint256' }
+  ],
+  outputs: [{ name: '', type: 'bool' }]
+}];
 
 const authTransport = http(config.rpcUrl, { fetch: authFetch });
 const publicClient = createPublicClient({ transport: authTransport });
@@ -245,7 +271,124 @@ function rowToProposal(row, confirmations) {
     confirmations,
     confirmationsRequired: row.threshold,
     executable: confirmations.length >= row.threshold && !row.executed_tx_hash,
-    executedTxHash: row.executed_tx_hash || undefined
+    executedTxHash: row.executed_tx_hash || undefined,
+    isAdvanced: Boolean(row.is_advanced),
+    summary: typeof row.summary === 'string' ? JSON.parse(row.summary) : row.summary || undefined
+  };
+}
+
+async function buildProposalSummary(tx, isAdvanced = false) {
+  if (isAdvanced) {
+    return {
+      type: 'advanced',
+      label: 'Custom calldata'
+    };
+  }
+
+  if (!tx.data || tx.data === '0x') {
+    return {
+      type: 'native-transfer',
+      amount: tx.value
+    };
+  }
+
+  try {
+    const decoded = decodeFunctionData({ abi: ERC20_TRANSFER_ABI, data: tx.data });
+    if (decoded.functionName !== 'transfer') return null;
+    const recipient = decoded.args[0];
+    const amount = decoded.args[1];
+    const metadata = await getTokenMetadata(tx.to);
+    return {
+      type: 'erc20-transfer',
+      tokenSymbol: metadata.symbol,
+      tokenAddress: metadata.address,
+      recipient: normalizeAddress(recipient),
+      amount: formatUnits(amount, metadata.decimals)
+    };
+  } catch (_error) {
+    return null;
+  }
+}
+
+async function normalizeProposalInput(input) {
+  const mode = input.mode || 'direct';
+  const isAdvanced = Boolean(input.advanced);
+
+  if (mode === 'erc20' && !isAdvanced) {
+    const tokenAddress = input.erc20?.tokenAddress;
+    const recipient = input.erc20?.recipient;
+    const amount = input.erc20?.amount;
+    if (!tokenAddress || !recipient || !amount) {
+      const err = new Error('erc20 tokenAddress/recipient/amount are required');
+      err.status = 400;
+      throw err;
+    }
+    if (!isAddress(tokenAddress) || !isAddress(recipient)) {
+      const err = new Error('erc20 tokenAddress and recipient must be valid addresses');
+      err.status = 400;
+      throw err;
+    }
+    if (!isSupportedToken(tokenAddress)) {
+      const err = new Error('Unsupported ERC20 token for this chain');
+      err.status = 400;
+      throw err;
+    }
+    const metadata = await getTokenMetadata(tokenAddress);
+    const parsedAmount = parseUnits(String(amount), metadata.decimals);
+    if (parsedAmount <= 0n) {
+      const err = new Error('erc20 amount must be greater than 0');
+      err.status = 400;
+      throw err;
+    }
+    return {
+      proposalTx: {
+        to: normalizeAddress(tokenAddress),
+        value: '0',
+        data: encodeFunctionData({
+          abi: ERC20_TRANSFER_ABI,
+          functionName: 'transfer',
+          args: [normalizeAddress(recipient), parsedAmount]
+        }),
+        operation: 0
+      },
+      isAdvanced: false,
+      summary: {
+        type: 'erc20-transfer',
+        tokenSymbol: metadata.symbol,
+        tokenAddress: metadata.address,
+        recipient: normalizeAddress(recipient),
+        amount: String(amount)
+      }
+    };
+  }
+
+  const tx = input.tx;
+  if (!tx?.to || tx?.value === undefined || tx?.data === undefined || tx?.operation === undefined) {
+    const err = new Error('tx.to/value/data/operation are required');
+    err.status = 400;
+    throw err;
+  }
+  if (!isAddress(tx.to)) {
+    const err = new Error('tx.to must be a valid address');
+    err.status = 400;
+    throw err;
+  }
+  if (!/^0x([0-9a-fA-F]{2})*$/.test(tx.data || '')) {
+    const err = new Error('tx.data must be valid hex');
+    err.status = 400;
+    throw err;
+  }
+
+  const proposalTx = {
+    to: normalizeAddress(tx.to),
+    value: String(tx.value),
+    data: tx.data,
+    operation: Number(tx.operation)
+  };
+  return {
+    proposalTx,
+    isAdvanced,
+    summary: await buildProposalSummary(proposalTx, isAdvanced)
   };
 }
 
@@ -280,22 +423,30 @@ export async function listProposalsForSafe(safeAddress) {
 
 export async function createProposal({ safeAddress, createdBy, tx }) {
   const safe = await readSafeOnChain(safeAddress);
-  const nonce = tx.nonce ? BigInt(tx.nonce) : BigInt(safe.nonce);
-  const proposalTx = {
-    to: normalizeAddress(tx.to),
-    value: tx.value,
-    data: tx.data,
-    operation: tx.operation,
-    nonce: nonce.toString()
-  };
+  const { proposalTx: normalizedTx, isAdvanced, summary } = await normalizeProposalInput(tx);
+  const providedNonce = tx.tx?.nonce ?? tx.nonce;
+  const nonce = providedNonce !== undefined ? BigInt(providedNonce) : BigInt(safe.nonce);
+  const proposalTx = { ...normalizedTx, nonce: nonce.toString() };
   const safeTxHash = buildSafeTxHash(safe.safeAddress, proposalTx).toLowerCase();
   const id = uuidv4();
 
   await pool.query(
-    `INSERT INTO proposals (id, safe_address, recipient, value, data, operation, nonce, safe_tx_hash, created_by)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+    `INSERT INTO proposals (id, safe_address, recipient, value, data, operation, nonce, safe_tx_hash, created_by, is_advanced, summary)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
      ON CONFLICT (safe_tx_hash) DO NOTHING`,
-    [id, safe.safeAddress, proposalTx.to, proposalTx.value, proposalTx.data, proposalTx.operation, proposalTx.nonce, safeTxHash, normalizeAddress(createdBy)]
+    [
+      id,
+      safe.safeAddress,
+      proposalTx.to,
+      proposalTx.value,
+      proposalTx.data,
+      proposalTx.operation,
+      proposalTx.nonce,
+      safeTxHash,
+      normalizeAddress(createdBy),
+      isAdvanced,
+      summary ? JSON.stringify(summary) : null
+    ]
   );
 
   return getProposalByHash(safeTxHash);

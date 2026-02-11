@@ -21,10 +21,15 @@ CREATE TABLE IF NOT EXISTS proposals (
   nonce BIGINT NOT NULL,
   safe_tx_hash TEXT UNIQUE NOT NULL,
   created_by TEXT NOT NULL,
+  is_advanced BOOLEAN NOT NULL DEFAULT FALSE,
+  summary JSONB NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   executed_tx_hash TEXT NULL,
   executed_at TIMESTAMPTZ NULL
 );
+
+ALTER TABLE proposals ADD COLUMN IF NOT EXISTS is_advanced BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE proposals ADD COLUMN IF NOT EXISTS summary JSONB NULL;
 
 CREATE TABLE IF NOT EXISTS signatures (
   proposal_id UUID NOT NULL REFERENCES proposals(id) ON DELETE CASCADE,

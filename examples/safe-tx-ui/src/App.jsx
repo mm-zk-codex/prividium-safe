@@ -2,24 +2,10 @@ import { useEffect, useMemo, useState } from 'react';
 import {
   createWalletClient,
   custom,
-  encodeFunctionData,
-  formatUnits,
   isAddress,
   parseUnits
 } from 'viem';
 import { API_BASE_URL, prividium } from './prividium';
-import { TOKENS_BY_CHAIN_ID } from './config/tokens';
-
-const ERC20_TRANSFER_ABI = [{
-  type: 'function',
-  name: 'transfer',
-  stateMutability: 'nonpayable',
-  inputs: [
-    { name: 'to', type: 'address' },
-    { name: 'value', type: 'uint256' }
-  ],
-  outputs: [{ name: '', type: 'bool' }]
-}];
 
 const PROPOSAL_MODES = [
   { key: 'erc20', label: 'ERC-20 Transfer' },
@@ -55,16 +41,6 @@ const getProposalTx = (proposal) => ({
   data: proposal.data || proposal.tx?.data || '0x',
   operation: proposal.operation ?? proposal.tx?.operation ?? 0
 });
-
-const decodeErc20TransferData = (data) => {
-  if (!data || !data.startsWith('0xa9059cbb') || data.length < 138) return null;
-  const recipientHex = data.slice(34, 74);
-  const amountHex = data.slice(74, 138);
-  return {
-    recipient: `0x${recipientHex}`,
-    amount: BigInt(`0x${amountHex}`)
-  };
-};
 
 const getProposalStatus = (proposal, myAddress) => {
   const confirmations = proposal.confirmations || [];
@@ -166,6 +142,7 @@ export default function App() {
   const [loadingProposals, setLoadingProposals] = useState(false);
   const [safeDetail, setSafeDetail] = useState(null);
   const [proposals, setProposals] = useState([]);
+  const [tokens, setTokens] = useState([]);
   const [registerInput, setRegisterInput] = useState('');
   const [toasts, setToasts] = useState([]);
 
@@ -189,7 +166,6 @@ export default function App() {
 
   const isAuthed = useMemo(() => prividium.isAuthorized(), [me]);
   const myAddress = me?.address?.toLowerCase();
-  const chainTokens = TOKENS_BY_CHAIN_ID[prividium.chain.id] || [];
 
   const addToast = (message, type = 'success') => {
     const id = crypto.randomUUID();
@@ -206,9 +182,10 @@ export default function App() {
     if (!prividium.isAuthorized()) return;
     setLoadingSafes(true);
     try {
-      const [meData, safeData] = await Promise.all([api('/v1/me'), api('/v1/safes')]);
+      const [meData, safeData, tokenData] = await Promise.all([api('/v1/me'), api('/v1/safes'), api('/v1/tokens')]);
       setMe(meData);
       setSafes(safeData.results || []);
+      setTokens(tokenData.tokens || []);
     } finally {
       setLoadingSafes(false);
     }
@@ -260,10 +237,10 @@ export default function App() {
   }, [route.page, route.safeAddress]);
 
   useEffect(() => {
-    if (chainTokens.length && !selectedToken) {
-      setSelectedToken(chainTokens[0].symbol);
+    if (tokens.length && !selectedToken) {
+      setSelectedToken(tokens[0].address);
     }
-  }, [chainTokens, selectedToken]);
+  }, [tokens, selectedToken]);
 
   useEffect(() => {
     setCreateErrors(getCreateErrors(owners, threshold).errors);
@@ -307,7 +284,7 @@ export default function App() {
     navigate(`/safes/${registerInput}`);
   };
 
-  const selectedTokenConfig = chainTokens.find((token) => token.symbol === selectedToken);
+  const selectedTokenConfig = tokens.find((token) => token.address === selectedToken);
 
   const proposalPreview = useMemo(() => {
     if (proposalMode === 'erc20') {
@@ -328,31 +305,31 @@ export default function App() {
       if (!isAddress(recipient)) throw new Error('Recipient must be a valid address');
       if (!amount || Number(amount) <= 0) throw new Error('Amount must be greater than 0');
 
-      const parsedAmount = parseUnits(amount, selectedTokenConfig.decimals);
-      const transferData = encodeFunctionData({
-        abi: ERC20_TRANSFER_ABI,
-        functionName: 'transfer',
-        args: [recipient, parsedAmount]
-      });
-
       let tx = {
-        to: selectedTokenConfig.address,
-        value: '0',
-        data: transferData,
-        operation: 0
+        mode: 'erc20',
+        advanced: false,
+        erc20: {
+          tokenAddress: selectedTokenConfig.address,
+          recipient,
+          amount
+        }
       };
 
       if (advancedOpen) {
         tx = {
-          to: customTo || tx.to,
-          value: customValue || tx.value,
-          data: customData || tx.data,
-          operation: Number(customOperation || tx.operation)
+          ...tx,
+          advanced: true,
+          tx: {
+            to: customTo,
+            value: customValue || '0',
+            data: customData || '0x',
+            operation: Number(customOperation || 0)
+          }
         };
       }
 
-      if (!isAddress(tx.to)) throw new Error('Transaction target must be a valid address');
-      if (!/^0x([0-9a-fA-F]{2})*$/.test(tx.data || '')) throw new Error('Transaction data must be valid hex');
+      if (advancedOpen && !isAddress(tx.tx.to)) throw new Error('Transaction target must be a valid address');
+      if (advancedOpen && !/^0x([0-9a-fA-F]{2})*$/.test(tx.tx.data || '')) throw new Error('Transaction data must be valid hex');
       return tx;
     }
 
@@ -360,20 +337,28 @@ export default function App() {
       if (!isAddress(nativeRecipient)) throw new Error('Recipient must be a valid address');
       if (!nativeAmount || Number(nativeAmount) <= 0) throw new Error('Amount must be greater than 0');
       return {
-        to: nativeRecipient,
-        value: parseUnits(nativeAmount, prividium.chain.nativeCurrency.decimals).toString(),
-        data: '0x',
-        operation: 0
+        mode: 'direct',
+        advanced: false,
+        tx: {
+          to: nativeRecipient,
+          value: parseUnits(nativeAmount, prividium.chain.nativeCurrency.decimals).toString(),
+          data: '0x',
+          operation: 0
+        }
       };
     }
 
     if (!isAddress(customTo)) throw new Error('Target must be a valid address');
     if (!/^0x([0-9a-fA-F]{2})*$/.test(customData || '')) throw new Error('Calldata must be valid hex');
     return {
-      to: customTo,
-      value: customValue || '0',
-      data: customData || '0x',
-      operation: Number(customOperation || 0)
+      mode: 'direct',
+      advanced: true,
+      tx: {
+        to: customTo,
+        value: customValue || '0',
+        data: customData || '0x',
+        operation: Number(customOperation || 0)
+      }
     };
   };
 
@@ -444,14 +429,16 @@ export default function App() {
   };
 
   const summaryFromProposal = (proposal) => {
-    const tx = getProposalTx(proposal);
-    const token = chainTokens.find((tk) => tk.address.toLowerCase() === tx.to.toLowerCase());
-    const decoded = decodeErc20TransferData(tx.data);
-    if (token && decoded) {
-      return `Transfer ${formatUnits(decoded.amount, token.decimals)} ${token.symbol} to ${decoded.recipient}`;
+    if (proposal.summary?.type === 'erc20-transfer') {
+      return `Transfer ${proposal.summary.amount} ${proposal.summary.tokenSymbol} to ${proposal.summary.recipient}`;
     }
+    if (proposal.summary?.type === 'advanced') {
+      return 'Custom calldata';
+    }
+
+    const tx = getProposalTx(proposal);
     if (tx.data === '0x') {
-      return `Transfer ${formatUnits(BigInt(tx.value || '0'), prividium.chain.nativeCurrency.decimals)} ${prividium.chain.nativeCurrency.symbol}`;
+      return `Transfer ${tx.value || '0'} ${prividium.chain.nativeCurrency.symbol}`;
     }
     return `Contract call (operation ${tx.operation})`;
   };
@@ -586,6 +573,7 @@ export default function App() {
                           <div className="proposal-card" key={proposal.id || proposal.safeTxHash}>
                             <div className="proposal-head">
                               <Badge tone={status.key === 'executed' ? 'default' : status.key === 'ready' ? 'success' : status.key === 'needsSig' ? 'warning' : 'info'}>{status.label}</Badge>
+                              {proposal.isAdvanced && <Badge tone="warning">Custom calldata</Badge>}
                               <span className="muted">{proposal.confirmations?.length || 0}/{proposal.confirmationsRequired} confirmations</span>
                             </div>
                             <p>{summaryFromProposal(proposal)}</p>
@@ -622,14 +610,14 @@ export default function App() {
               <>
                 <label>Token</label>
                 <select value={selectedToken} onChange={(e) => setSelectedToken(e.target.value)}>
-                  {chainTokens.map((token) => (
-                    <option value={token.symbol} key={token.symbol}>{token.symbol} · {token.name}</option>
+                  {tokens.map((token) => (
+                    <option value={token.address} key={token.address} title={token.address}>{token.symbol} · {token.name}</option>
                   ))}
                 </select>
                 <label>Recipient</label>
                 <input value={recipient} onChange={(e) => setRecipient(e.target.value)} placeholder="0x..." />
-                <label>Amount</label>
-                <input value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0.0" />
+                <label>Amount {selectedTokenConfig ? `(${selectedTokenConfig.decimals} decimals)` : ''}</label>
+                <input value={amount} onChange={(e) => setAmount(e.target.value)} placeholder={selectedTokenConfig ? `0.${'0'.repeat(Math.min(selectedTokenConfig.decimals, 6))}` : '0.0'} />
 
                 <button className="link" onClick={() => setAdvancedOpen((v) => !v)}>Advanced {advancedOpen ? '▲' : '▼'}</button>
                 {advancedOpen && (
