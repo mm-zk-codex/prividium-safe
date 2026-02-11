@@ -1,4 +1,4 @@
-import { encodeAbiParameters, encodeFunctionData, getAddress, keccak256, recoverAddress, concatHex, createPublicClient, createWalletClient, decodeEventLog, http } from 'viem';
+import { encodeFunctionData, getAddress, concatHex, createPublicClient, createWalletClient, decodeEventLog, http, recoverTypedDataAddress, hashTypedData } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 import { config } from './config.js';
 import { pool } from './db.js';
@@ -84,20 +84,47 @@ export function normalizeAddress(address) {
   return getAddress(address).toLowerCase();
 }
 
+const SAFE_TX_TYPES = {
+  SafeTx: [
+    { name: 'to', type: 'address' },
+    { name: 'value', type: 'uint256' },
+    { name: 'data', type: 'bytes' },
+    { name: 'operation', type: 'uint8' },
+    { name: 'safeTxGas', type: 'uint256' },
+    { name: 'baseGas', type: 'uint256' },
+    { name: 'gasPrice', type: 'uint256' },
+    { name: 'gasToken', type: 'address' },
+    { name: 'refundReceiver', type: 'address' },
+    { name: 'nonce', type: 'uint256' }
+  ]
+};
+
+export function buildSafeTxTypedData({ chainId, safeAddress, safeTx }) {
+  return {
+    domain: {
+      chainId: BigInt(chainId),
+      verifyingContract: normalizeAddress(safeAddress)
+    },
+    types: SAFE_TX_TYPES,
+    primaryType: 'SafeTx',
+    message: {
+      to: normalizeAddress(safeTx.to),
+      value: BigInt(safeTx.value),
+      data: safeTx.data,
+      operation: Number(safeTx.operation),
+      safeTxGas: 0n,
+      baseGas: 0n,
+      gasPrice: 0n,
+      gasToken: '0x0000000000000000000000000000000000000000',
+      refundReceiver: '0x0000000000000000000000000000000000000000',
+      nonce: BigInt(safeTx.nonce)
+    }
+  };
+}
+
 export function buildSafeTxHash(safeAddress, tx) {
-  return keccak256(
-    encodeAbiParameters(
-      [
-        { type: 'address' },
-        { type: 'address' },
-        { type: 'uint256' },
-        { type: 'bytes' },
-        { type: 'uint8' },
-        { type: 'uint256' }
-      ],
-      [safeAddress, tx.to, BigInt(tx.value), tx.data, tx.operation, BigInt(tx.nonce)]
-    )
-  );
+  const typedData = buildSafeTxTypedData({ chainId: config.chainId, safeAddress, safeTx: tx });
+  return hashTypedData(typedData);
 }
 
 export async function readSafeOnChain(safeAddress) {
@@ -281,12 +308,14 @@ export async function addConfirmation({ safeTxHash, ownerAddress, signature }) {
     err.status = 404;
     throw err;
   }
-  console.log('hash to sign', proposal.safeTxHash);
-  const recovered = await recoverAddress({ hash: proposal.safeTxHash, signature });
-  console.log('Recovered address from signature', recovered);
-  console.log('Owner address', ownerAddress);
+  const typedData = buildSafeTxTypedData({
+    chainId: config.chainId,
+    safeAddress: proposal.safeAddress,
+    safeTx: proposal.tx
+  });
+  const recovered = await recoverTypedDataAddress({ ...typedData, signature });
   if (normalizeAddress(recovered) !== normalizeAddress(ownerAddress)) {
-    const err = new Error('Signature does not match authenticated user');
+    const err = new Error('Signature mismatch (ensure you signed the typed data prompt)');
     err.status = 400;
     throw err;
   }
@@ -298,6 +327,38 @@ export async function addConfirmation({ safeTxHash, ownerAddress, signature }) {
     [proposal.id, normalizeAddress(ownerAddress), signature]
   );
   return getProposalByHash(safeTxHash);
+}
+
+export async function getTypedDataForProposal(safeTxHash) {
+  const proposal = await getProposalByHash(safeTxHash);
+  if (!proposal) {
+    const err = new Error('Proposal not found');
+    err.status = 404;
+    throw err;
+  }
+  const typedData = buildSafeTxTypedData({
+    chainId: config.chainId,
+    safeAddress: proposal.safeAddress,
+    safeTx: proposal.tx
+  });
+  return {
+    domain: {
+      ...typedData.domain,
+      chainId: Number(typedData.domain.chainId)
+    },
+    types: typedData.types,
+    primaryType: typedData.primaryType,
+    message: {
+      ...typedData.message,
+      value: typedData.message.value.toString(),
+      safeTxGas: typedData.message.safeTxGas.toString(),
+      baseGas: typedData.message.baseGas.toString(),
+      gasPrice: typedData.message.gasPrice.toString(),
+      nonce: typedData.message.nonce.toString()
+    },
+    safeAddress: proposal.safeAddress,
+    chainId: config.chainId
+  };
 }
 
 function joinSignatures(signatures) {

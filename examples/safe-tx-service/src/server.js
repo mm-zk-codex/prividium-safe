@@ -10,6 +10,7 @@ import {
   executeProposal,
   getLatestBlockNumber,
   getProposalByHash,
+  getTypedDataForProposal,
   listProposalsForSafe,
   listSafesForOwner,
   normalizeAddress,
@@ -85,6 +86,14 @@ app.post('/v1/transactions/:safeTxHash/confirmations', async (req, res) => {
   await assertOwner(proposal.safeAddress, req.auth.userAddress);
   const updated = await addConfirmation({ safeTxHash: proposal.safeTxHash, ownerAddress: req.auth.userAddress, signature });
   res.json(updated);
+});
+
+app.get('/v1/transactions/:safeTxHash/typed-data', async (req, res) => {
+  const proposal = await getProposalByHash(req.params.safeTxHash.toLowerCase());
+  if (!proposal) return res.status(404).json({ error: 'proposal not found' });
+  await assertOwner(proposal.safeAddress, req.auth.userAddress);
+  const typedData = await getTypedDataForProposal(proposal.safeTxHash);
+  res.json(typedData);
 });
 
 app.post('/v1/transactions/:safeTxHash/execute', async (req, res) => {
