@@ -17,7 +17,12 @@ import {
   readSafeOnChain,
   syncExecutionsFromChain,
   upsertSafe,
-  addConfirmation
+  addConfirmation,
+  getSafeBalances,
+  listAddressBookEntries,
+  createAddressBookEntry,
+  updateAddressBookEntry,
+  deleteAddressBookEntry
 } from './safeService.js';
 import { listSupportedTokens } from './tokens.js';
 
@@ -72,6 +77,53 @@ app.get('/v1/safes/:safeAddress/transactions', async (req, res) => {
 app.get('/v1/tokens', async (_req, res) => {
   const tokens = await listSupportedTokens();
   res.json({ tokens });
+});
+
+
+app.get('/v1/safes/:safeAddress/balances', async (req, res) => {
+  await assertOwner(req.params.safeAddress, req.auth.userAddress);
+  const balances = await getSafeBalances(req.params.safeAddress);
+  res.json(balances);
+});
+
+app.get('/v1/safes/:safeAddress/address-book', async (req, res) => {
+  await assertOwner(req.params.safeAddress, req.auth.userAddress);
+  const entries = await listAddressBookEntries(req.params.safeAddress);
+  res.json({ entries });
+});
+
+app.post('/v1/safes/:safeAddress/address-book', async (req, res) => {
+  await assertOwner(req.params.safeAddress, req.auth.userAddress);
+  const { label, address } = req.body || {};
+  const entry = await createAddressBookEntry({
+    safeAddress: req.params.safeAddress,
+    label,
+    address,
+    changedBy: req.auth.userAddress
+  });
+  res.status(201).json(entry);
+});
+
+app.put('/v1/safes/:safeAddress/address-book/:id', async (req, res) => {
+  await assertOwner(req.params.safeAddress, req.auth.userAddress);
+  const entry = await updateAddressBookEntry({
+    safeAddress: req.params.safeAddress,
+    entryId: req.params.id,
+    label: req.body?.label,
+    address: req.body?.address,
+    changedBy: req.auth.userAddress
+  });
+  res.json(entry);
+});
+
+app.delete('/v1/safes/:safeAddress/address-book/:id', async (req, res) => {
+  await assertOwner(req.params.safeAddress, req.auth.userAddress);
+  const deleted = await deleteAddressBookEntry({
+    safeAddress: req.params.safeAddress,
+    entryId: req.params.id,
+    changedBy: req.auth.userAddress
+  });
+  res.json(deleted);
 });
 
 app.post('/v1/safes/:safeAddress/transactions', async (req, res) => {

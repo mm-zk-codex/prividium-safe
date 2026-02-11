@@ -233,3 +233,18 @@ input, select {
   .wallet-pill { width: 100%; justify-content: space-between; }
   .overview-grid { grid-template-columns: 1fr; }
 }
+
+
+.balance-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  padding: 10px;
+}
+
+.token-meta {
+  margin: 4px 0 0;
+}

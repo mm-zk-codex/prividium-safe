@@ -43,3 +43,31 @@ CREATE TABLE IF NOT EXISTS sync_state (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS address_book (
+  id UUID PRIMARY KEY,
+  safe_address TEXT NOT NULL REFERENCES safes(safe_address) ON DELETE CASCADE,
+  address TEXT NOT NULL,
+  label TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  created_by TEXT NOT NULL,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_by TEXT NOT NULL,
+  UNIQUE (safe_address, address)
+);
+
+CREATE TABLE IF NOT EXISTS address_book_audit (
+  id UUID PRIMARY KEY,
+  address_book_id UUID NULL REFERENCES address_book(id) ON DELETE SET NULL,
+  safe_address TEXT NOT NULL,
+  action TEXT NOT NULL CHECK (action IN ('create', 'update', 'delete')),
+  old_label TEXT NULL,
+  new_label TEXT NULL,
+  old_address TEXT NULL,
+  new_address TEXT NULL,
+  changed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  changed_by TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_address_book_safe ON address_book(safe_address);
+CREATE INDEX IF NOT EXISTS idx_address_book_audit_safe_changed_at ON address_book_audit(safe_address, changed_at DESC);

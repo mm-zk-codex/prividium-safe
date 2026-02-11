@@ -18,7 +18,7 @@ import { config } from './config.js';
 import { pool } from './db.js';
 import { v4 as uuidv4 } from 'uuid';
 import { authFetch } from './prividiumAuth.js';
-import { getTokenMetadata, isSupportedToken } from './tokens.js';
+import { getSupportedTokenAddresses, getTokenMetadata, isSupportedToken } from './tokens.js';
 
 const SAFE_ABI = [
   { type: 'function', name: 'getOwners', stateMutability: 'view', inputs: [], outputs: [{ type: 'address[]' }] },
@@ -99,6 +99,14 @@ const ERC20_TRANSFER_ABI = [{
     { name: 'value', type: 'uint256' }
   ],
   outputs: [{ name: '', type: 'bool' }]
+}];
+
+const ERC20_BALANCE_ABI = [{
+  type: 'function',
+  name: 'balanceOf',
+  stateMutability: 'view',
+  inputs: [{ name: 'account', type: 'address' }],
+  outputs: [{ name: '', type: 'uint256' }]
 }];
 
 const authTransport = http(config.rpcUrl, { fetch: authFetch });
@@ -563,4 +571,253 @@ export async function syncExecutionsFromChain(fromBlock) {
 
 export async function getLatestBlockNumber() {
   return Number(await publicClient.getBlockNumber());
+}
+
+export async function getSafeBalances(safeAddress) {
+  const normalizedSafeAddress = normalizeAddress(safeAddress);
+  const nativeBalance = await publicClient.getBalance({ address: normalizedSafeAddress });
+  const tokenAddresses = getSupportedTokenAddresses();
+  const erc20 = await Promise.all(
+    tokenAddresses.map(async (tokenAddress) => {
+      const [metadata, balance] = await Promise.all([
+        getTokenMetadata(tokenAddress),
+        publicClient.readContract({
+          address: tokenAddress,
+          abi: ERC20_BALANCE_ABI,
+          functionName: 'balanceOf',
+          args: [normalizedSafeAddress]
+        })
+      ]);
+      return {
+        address: metadata.address,
+        symbol: metadata.symbol,
+        name: metadata.name,
+        decimals: metadata.decimals,
+        balance: balance.toString()
+      };
+    })
+  );
+
+  return {
+    safeAddress: normalizedSafeAddress,
+    chainId: config.chainId,
+    native: {
+      symbol: config.nativeSymbol,
+      decimals: config.nativeDecimals,
+      balance: nativeBalance.toString()
+    },
+    erc20
+  };
+}
+
+function normalizeLabel(label) {
+  return String(label || '').trim();
+}
+
+function validateAddressBookInput({ label, address }, { allowPartial = false } = {}) {
+  const errors = [];
+  const normalized = {};
+
+  if (!allowPartial || label !== undefined) {
+    const nextLabel = normalizeLabel(label);
+    if (!nextLabel) errors.push('label is required');
+    if (nextLabel.length > 80) errors.push('label must be 80 characters or less');
+    normalized.label = nextLabel;
+  }
+
+  if (!allowPartial || address !== undefined) {
+    if (!isAddress(address || '')) {
+      errors.push('address must be a valid 0x address');
+    } else {
+      normalized.address = normalizeAddress(address);
+    }
+  }
+
+  if (errors.length) {
+    const err = new Error(errors[0]);
+    err.status = 400;
+    throw err;
+  }
+
+  return normalized;
+}
+
+async function getEntryTxCount(safeAddress, address) {
+  const countRes = await pool.query(
+    `SELECT COUNT(*)::int AS tx_count
+       FROM proposals
+      WHERE safe_address = $1
+        AND recipient = $2
+        AND executed_tx_hash IS NOT NULL`,
+    [safeAddress, address]
+  );
+  return Number(countRes.rows[0]?.tx_count || 0);
+}
+
+async function getLatestAuditByEntryIds(safeAddress) {
+  const rows = await pool.query(
+    `SELECT DISTINCT ON (a.address_book_id)
+        a.address_book_id,
+        a.changed_at,
+        a.changed_by
+      FROM address_book_audit a
+      WHERE a.safe_address = $1
+      ORDER BY a.address_book_id, a.changed_at DESC`,
+    [safeAddress]
+  );
+  return new Map(rows.rows.map((row) => [row.address_book_id, row]));
+}
+
+function mapAddressBookRow(row, latestAudit, txCount) {
+  return {
+    id: row.id,
+    label: row.label,
+    address: row.address,
+    createdAt: row.created_at.toISOString(),
+    createdBy: row.created_by,
+    updatedAt: row.updated_at.toISOString(),
+    updatedBy: row.updated_by,
+    lastChangedAt: (latestAudit?.changed_at || row.updated_at).toISOString(),
+    lastChangedBy: latestAudit?.changed_by || row.updated_by,
+    txCount
+  };
+}
+
+export async function listAddressBookEntries(safeAddress) {
+  const normalizedSafeAddress = normalizeAddress(safeAddress);
+  const entries = await pool.query(
+    `SELECT id, safe_address, address, label, created_at, created_by, updated_at, updated_by
+     FROM address_book
+     WHERE safe_address = $1
+     ORDER BY updated_at DESC, created_at DESC`,
+    [normalizedSafeAddress]
+  );
+  const latestAuditByEntry = await getLatestAuditByEntryIds(normalizedSafeAddress);
+
+  const rows = await Promise.all(entries.rows.map(async (row) => {
+    const txCount = await getEntryTxCount(normalizedSafeAddress, row.address);
+    return mapAddressBookRow(row, latestAuditByEntry.get(row.id), txCount);
+  }));
+
+  return rows;
+}
+
+export async function createAddressBookEntry({ safeAddress, label, address, changedBy }) {
+  const normalizedSafeAddress = normalizeAddress(safeAddress);
+  const normalizedBy = normalizeAddress(changedBy);
+  const normalizedInput = validateAddressBookInput({ label, address });
+  const id = uuidv4();
+  const auditId = uuidv4();
+
+  await pool.query('BEGIN');
+  try {
+    const created = await pool.query(
+      `INSERT INTO address_book (id, safe_address, address, label, created_by, updated_by)
+       VALUES ($1,$2,$3,$4,$5,$6)
+       RETURNING id, safe_address, address, label, created_at, created_by, updated_at, updated_by`,
+      [id, normalizedSafeAddress, normalizedInput.address, normalizedInput.label, normalizedBy, normalizedBy]
+    );
+    await pool.query(
+      `INSERT INTO address_book_audit (id, address_book_id, safe_address, action, new_label, new_address, changed_by)
+       VALUES ($1,$2,$3,'create',$4,$5,$6)`,
+      [auditId, id, normalizedSafeAddress, normalizedInput.label, normalizedInput.address, normalizedBy]
+    );
+    await pool.query('COMMIT');
+    const txCount = await getEntryTxCount(normalizedSafeAddress, normalizedInput.address);
+    return mapAddressBookRow(created.rows[0], { changed_at: created.rows[0].updated_at, changed_by: normalizedBy }, txCount);
+  } catch (error) {
+    await pool.query('ROLLBACK');
+    if (error.code === '23505') {
+      const err = new Error('Address already exists in this safe address book');
+      err.status = 409;
+      throw err;
+    }
+    throw error;
+  }
+}
+
+export async function updateAddressBookEntry({ safeAddress, entryId, label, address, changedBy }) {
+  const normalizedSafeAddress = normalizeAddress(safeAddress);
+  const normalizedBy = normalizeAddress(changedBy);
+  const nextInput = validateAddressBookInput({ label, address }, { allowPartial: true });
+  if (!Object.keys(nextInput).length) {
+    const err = new Error('label or address is required');
+    err.status = 400;
+    throw err;
+  }
+
+  await pool.query('BEGIN');
+  try {
+    const existing = await pool.query(
+      `SELECT id, safe_address, address, label, created_at, created_by, updated_at, updated_by
+       FROM address_book
+       WHERE id = $1 AND safe_address = $2`,
+      [entryId, normalizedSafeAddress]
+    );
+    if (!existing.rowCount) {
+      const err = new Error('Address book entry not found');
+      err.status = 404;
+      throw err;
+    }
+
+    const current = existing.rows[0];
+    const updatedLabel = nextInput.label ?? current.label;
+    const updatedAddress = nextInput.address ?? current.address;
+    const updated = await pool.query(
+      `UPDATE address_book
+       SET label = $1, address = $2, updated_at = now(), updated_by = $3
+       WHERE id = $4
+       RETURNING id, safe_address, address, label, created_at, created_by, updated_at, updated_by`,
+      [updatedLabel, updatedAddress, normalizedBy, entryId]
+    );
+
+    await pool.query(
+      `INSERT INTO address_book_audit (id, address_book_id, safe_address, action, old_label, new_label, old_address, new_address, changed_by)
+       VALUES ($1,$2,$3,'update',$4,$5,$6,$7,$8)`,
+      [uuidv4(), entryId, normalizedSafeAddress, current.label, updatedLabel, current.address, updatedAddress, normalizedBy]
+    );
+    await pool.query('COMMIT');
+    const txCount = await getEntryTxCount(normalizedSafeAddress, updatedAddress);
+    return mapAddressBookRow(updated.rows[0], { changed_at: updated.rows[0].updated_at, changed_by: normalizedBy }, txCount);
+  } catch (error) {
+    await pool.query('ROLLBACK');
+    if (error.code === '23505') {
+      const err = new Error('Address already exists in this safe address book');
+      err.status = 409;
+      throw err;
+    }
+    throw error;
+  }
+}
+
+export async function deleteAddressBookEntry({ safeAddress, entryId, changedBy }) {
+  const normalizedSafeAddress = normalizeAddress(safeAddress);
+  const normalizedBy = normalizeAddress(changedBy);
+
+  await pool.query('BEGIN');
+  try {
+    const existing = await pool.query(
+      `SELECT id, safe_address, address, label
+       FROM address_book
+       WHERE id = $1 AND safe_address = $2`,
+      [entryId, normalizedSafeAddress]
+    );
+    if (!existing.rowCount) {
+      const err = new Error('Address book entry not found');
+      err.status = 404;
+      throw err;
+    }
+    const current = existing.rows[0];
+    await pool.query('DELETE FROM address_book WHERE id = $1', [entryId]);
+    await pool.query(
+      `INSERT INTO address_book_audit (id, address_book_id, safe_address, action, old_label, old_address, changed_by)
+       VALUES ($1,$2,$3,'delete',$4,$5,$6)`,
+      [uuidv4(), entryId, normalizedSafeAddress, current.label, current.address, normalizedBy]
+    );
+    await pool.query('COMMIT');
+    return { id: entryId };
+  } catch (error) {
+    await pool.query('ROLLBACK');
+    throw error;
+  }
 }
