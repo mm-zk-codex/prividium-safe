@@ -19,6 +19,7 @@ import {
   upsertSafe,
   addConfirmation
 } from './safeService.js';
+import { listSupportedTokens } from './tokens.js';
 
 const app = express();
 app.use(cors());
@@ -68,13 +69,17 @@ app.get('/v1/safes/:safeAddress/transactions', async (req, res) => {
   res.json({ results });
 });
 
+app.get('/v1/tokens', async (_req, res) => {
+  const tokens = await listSupportedTokens();
+  res.json({ tokens });
+});
+
 app.post('/v1/safes/:safeAddress/transactions', async (req, res) => {
   await assertOwner(req.params.safeAddress, req.auth.userAddress);
-  const tx = req.body?.tx;
-  if (!tx?.to || tx?.value === undefined || tx?.data === undefined || tx?.operation === undefined) {
-    return res.status(400).json({ error: 'tx.to/value/data/operation are required' });
+  if (!req.body?.tx) {
+    return res.status(400).json({ error: 'tx payload is required' });
   }
-  const proposal = await createProposal({ safeAddress: req.params.safeAddress, createdBy: req.auth.userAddress, tx });
+  const proposal = await createProposal({ safeAddress: req.params.safeAddress, createdBy: req.auth.userAddress, tx: req.body.tx });
   res.status(201).json(proposal);
 });
 
