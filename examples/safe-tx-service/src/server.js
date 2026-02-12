@@ -8,6 +8,7 @@ import {
   createProposal,
   createSafe,
   createWithdrawalProposal,
+  createErc20WithdrawalProposal,
   executeProposal,
   getLatestBlockNumber,
   getProposalByHash,
@@ -143,6 +144,18 @@ app.post('/v1/safes/:safeAddress/withdrawals', async (req, res) => {
   const proposal = await createWithdrawalProposal({
     safeAddress: req.params.safeAddress,
     createdBy: req.auth.userAddress,
+    recipient: req.body?.recipient,
+    amount: req.body?.amount
+  });
+  res.status(201).json(proposal);
+});
+
+app.post('/v1/safes/:safeAddress/withdrawals/erc20', async (req, res) => {
+  await assertOwner(req.params.safeAddress, req.auth.userAddress);
+  const proposal = await createErc20WithdrawalProposal({
+    safeAddress: req.params.safeAddress,
+    createdBy: req.auth.userAddress,
+    tokenAddress: req.body?.tokenAddress,
     recipient: req.body?.recipient,
     amount: req.body?.amount
   });

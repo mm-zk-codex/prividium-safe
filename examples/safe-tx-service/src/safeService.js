@@ -5,6 +5,7 @@ import {
   createPublicClient,
   createWalletClient,
   decodeAbiParameters,
+  encodeAbiParameters,
   decodeEventLog,
   decodeFunctionData,
   formatUnits,
@@ -19,7 +20,7 @@ import { config } from './config.js';
 import { pool } from './db.js';
 import { v4 as uuidv4 } from 'uuid';
 import { authFetch } from './prividiumAuth.js';
-import { getSupportedTokenAddresses, getTokenMetadata, isSupportedToken } from './tokens.js';
+import { getSupportedTokenAddresses, getTokenMetadata, isSupportedToken, isWithdrawableToken } from './tokens.js';
 
 const SAFE_ABI = [
   { type: 'function', name: 'getOwners', stateMutability: 'view', inputs: [], outputs: [{ type: 'address[]' }] },
@@ -105,6 +106,9 @@ const ERC20_TRANSFER_ABI = [{
 
 const L2_BASE_TOKEN = '0x000000000000000000000000000000000000800a';
 const L1_MESSENGER = '0x0000000000000000000000000000000000008008';
+const L2_ASSET_ROUTER = '0x0000000000000000000000000000000000010003';
+const L2_NATIVE_TOKEN_VAULT = '0x0000000000000000000000000000000000010004';
+const WITHDRAWAL_MESSAGE_TOPIC_PREFIX = '0x3a36e472';
 
 const WITHDRAW_ABI = [{
   type: 'function',
@@ -112,6 +116,26 @@ const WITHDRAW_ABI = [{
   stateMutability: 'payable',
   inputs: [{ name: '_l1Receiver', type: 'address' }],
   outputs: []
+}];
+
+
+const L2_ASSET_ROUTER_ABI = [{
+  type: 'function',
+  name: 'withdraw',
+  stateMutability: 'payable',
+  inputs: [
+    { name: 'assetId', type: 'bytes32' },
+    { name: 'withdrawalData', type: 'bytes' }
+  ],
+  outputs: []
+}];
+
+const L2_NATIVE_TOKEN_VAULT_ABI = [{
+  type: 'function',
+  name: 'assetId',
+  stateMutability: 'view',
+  inputs: [{ name: 'token', type: 'address' }],
+  outputs: [{ type: 'bytes32' }]
 }];
 
 const BRIDGEHUB_ABI = [{
@@ -340,10 +364,19 @@ function mapWithdrawalRow(row, fallbackStatus) {
   const status = row.withdrawal_status || fallbackStatus;
   return {
     status,
+    assetType: row.withdrawal_asset_type || 'base',
+    recipient: row.withdrawal_l1_recipient || undefined,
+    amountWei: row.withdrawal_amount_wei || undefined,
     l2TxHash: row.withdrawal_l2_tx_hash || undefined,
     l1TxHash: row.withdrawal_l1_tx_hash || undefined,
     l2BatchNumber: row.withdrawal_l2_batch_number?.toString(),
     progress: buildWithdrawalProgress(status),
+    waitingHint: status === 'awaiting_proof' ? 'Waiting for batch finalization (timing varies).' : undefined,
+    token: row.withdrawal_asset_type === 'erc20' ? {
+      l2TokenAddress: row.withdrawal_l2_token_address || undefined,
+      l1TokenAddress: row.withdrawal_l1_token_address || undefined,
+      symbol: row.withdrawal_token_symbol || undefined
+    } : undefined,
     lastError: row.withdrawal_last_error || undefined
   };
 }
@@ -497,7 +530,13 @@ export async function getProposalByHash(safeTxHash) {
       w.l2_tx_hash AS withdrawal_l2_tx_hash,
       w.l1_tx_hash AS withdrawal_l1_tx_hash,
       w.l2_batch_number AS withdrawal_l2_batch_number,
-      w.last_error AS withdrawal_last_error
+      w.last_error AS withdrawal_last_error,
+      w.asset_type AS withdrawal_asset_type,
+      w.l1_recipient AS withdrawal_l1_recipient,
+      w.amount_wei AS withdrawal_amount_wei,
+      w.l2_token_address AS withdrawal_l2_token_address,
+      w.l1_token_address AS withdrawal_l1_token_address,
+      (w.calldata_summary->>'tokenSymbol') AS withdrawal_token_symbol
      FROM proposals p
      JOIN safes s ON s.safe_address = p.safe_address
      LEFT JOIN withdrawals w ON w.proposal_id = p.id
@@ -518,7 +557,13 @@ export async function listProposalsForSafe(safeAddress) {
       w.l2_tx_hash AS withdrawal_l2_tx_hash,
       w.l1_tx_hash AS withdrawal_l1_tx_hash,
       w.l2_batch_number AS withdrawal_l2_batch_number,
-      w.last_error AS withdrawal_last_error
+      w.last_error AS withdrawal_last_error,
+      w.asset_type AS withdrawal_asset_type,
+      w.l1_recipient AS withdrawal_l1_recipient,
+      w.amount_wei AS withdrawal_amount_wei,
+      w.l2_token_address AS withdrawal_l2_token_address,
+      w.l1_token_address AS withdrawal_l1_token_address,
+      (w.calldata_summary->>'tokenSymbol') AS withdrawal_token_symbol
      FROM proposals p JOIN safes s ON s.safe_address = p.safe_address
      LEFT JOIN withdrawals w ON w.proposal_id = p.id
      WHERE p.safe_address = $1
@@ -602,10 +647,97 @@ export async function createWithdrawalProposal({ safeAddress, createdBy, recipie
   });
 
   await pool.query(
-    `INSERT INTO withdrawals (proposal_id, safe_address, l1_recipient, amount_wei, status)
-     VALUES ($1,$2,$3,$4,'proposed')
+    `INSERT INTO withdrawals (proposal_id, safe_address, l1_recipient, amount_wei, status, asset_type, calldata_summary, proof_kind, l2_sender)
+     VALUES ($1,$2,$3,$4,'proposed','base',$5,'l2_to_l1_log_proof',$6)
      ON CONFLICT (proposal_id) DO NOTHING`,
-    [proposal.id, proposal.safeAddress, normalizeAddress(recipient), parsedAmount.toString()]
+    [proposal.id, proposal.safeAddress, normalizeAddress(recipient), parsedAmount.toString(), JSON.stringify(summary), L2_BASE_TOKEN]
+  );
+
+  await pool.query('UPDATE proposals SET summary = $1 WHERE id = $2', [JSON.stringify(summary), proposal.id]);
+  return getProposalByHash(proposal.safeTxHash);
+}
+
+export async function createErc20WithdrawalProposal({ safeAddress, createdBy, tokenAddress, recipient, amount }) {
+  if (!isAddress(tokenAddress) || !isAddress(recipient)) {
+    const err = new Error('tokenAddress and recipient must be valid addresses');
+    err.status = 400;
+    throw err;
+  }
+  if (!isWithdrawableToken(tokenAddress)) {
+    const err = new Error('tokenAddress is not configured as withdrawable to L1');
+    err.status = 400;
+    throw err;
+  }
+
+  const metadata = await getTokenMetadata(tokenAddress);
+  const parsedAmount = parseUnits(String(amount || ''), metadata.decimals);
+  if (parsedAmount <= 0n) {
+    const err = new Error('amount must be greater than 0');
+    err.status = 400;
+    throw err;
+  }
+
+  const assetId = await publicClient.readContract({
+    address: L2_NATIVE_TOKEN_VAULT,
+    abi: L2_NATIVE_TOKEN_VAULT_ABI,
+    functionName: 'assetId',
+    args: [normalizeAddress(tokenAddress)]
+  });
+  if (!assetId || assetId === '0x0000000000000000000000000000000000000000000000000000000000000000') {
+    const err = new Error('Token is not registered in the L2 Native Token Vault');
+    err.status = 400;
+    throw err;
+  }
+
+  const withdrawData = encodeAbiParameters(
+    [
+      { name: 'amount', type: 'uint256' },
+      { name: 'recipient', type: 'address' },
+      { name: 'token', type: 'address' }
+    ],
+    [parsedAmount, normalizeAddress(recipient), '0x0000000000000000000000000000000000000000']
+  );
+
+  const summary = {
+    type: 'l2-to-l1-withdrawal-erc20',
+    tokenSymbol: metadata.symbol,
+    tokenAddress: metadata.address,
+    recipient: normalizeAddress(recipient),
+    amount: String(amount)
+  };
+
+  const proposal = await createProposal({
+    safeAddress,
+    createdBy,
+    tx: {
+      mode: 'direct',
+      advanced: false,
+      tx: {
+        to: L2_ASSET_ROUTER,
+        value: '0',
+        data: encodeFunctionData({
+          abi: L2_ASSET_ROUTER_ABI,
+          functionName: 'withdraw',
+          args: [assetId, withdrawData]
+        }),
+        operation: 0
+      }
+    }
+  });
+
+  await pool.query(
+    `INSERT INTO withdrawals (proposal_id, safe_address, l1_recipient, amount_wei, status, asset_type, l2_token_address, calldata_summary, proof_kind, l2_sender)
+     VALUES ($1,$2,$3,$4,'proposed','erc20',$5,$6,'l2_to_l1_log_proof',$7)
+     ON CONFLICT (proposal_id) DO NOTHING`,
+    [
+      proposal.id,
+      proposal.safeAddress,
+      normalizeAddress(recipient),
+      parsedAmount.toString(),
+      metadata.address,
+      JSON.stringify(summary),
+      L2_ASSET_ROUTER
+    ]
   );
 
   await pool.query('UPDATE proposals SET summary = $1 WHERE id = $2', [JSON.stringify(summary), proposal.id]);
@@ -734,7 +866,7 @@ export async function executeProposal(safeTxHash) {
   await pool.query('UPDATE proposals SET executed_tx_hash = $1, executed_at = now() WHERE id = $2', [hash.toLowerCase(), proposal.id]);
   await pool.query(
     `UPDATE withdrawals
-     SET l2_tx_hash = $1, status = 'awaiting_proof', updated_at = now(), next_retry_at = now()
+     SET l2_tx_hash = $1, status = 'executed_l2', updated_at = now(), next_retry_at = now()
      WHERE proposal_id = $2`,
     [hash.toLowerCase(), proposal.id]
   );
@@ -788,6 +920,26 @@ function unwrapMessageBytes(logData) {
   return message;
 }
 
+function getMessengerLogCandidates(receipt) {
+  return receipt.logs
+    .map((log, idx) => ({ log, idx }))
+    .filter(({ log }) => (
+      log.address?.toLowerCase() === L1_MESSENGER
+      && Array.isArray(log.topics)
+      && String(log.topics[0] || '').toLowerCase().startsWith(WITHDRAWAL_MESSAGE_TOPIC_PREFIX)
+    ));
+}
+
+async function getProofForIndices(txHash, indices) {
+  for (const idx of indices) {
+    const proofRaw = await publicClient.request({ method: 'zks_getL2ToL1LogProof', params: [txHash, Number(idx)] });
+    if (proofRaw) {
+      return { proofRaw, index: Number(idx) };
+    }
+  }
+  return null;
+}
+
 async function processSingleWithdrawal(withdrawal) {
   try {
     if (withdrawal.status === 'failed' && withdrawal.l1_tx_hash) {
@@ -795,9 +947,23 @@ async function processSingleWithdrawal(withdrawal) {
       return;
     }
 
+    if (withdrawal.status === 'executed_l2') {
+      await pool.query(`UPDATE withdrawals SET status='awaiting_proof', updated_at=now(), next_retry_at=now() WHERE proposal_id=$1`, [withdrawal.proposal_id]);
+      withdrawal = { ...withdrawal, status: 'awaiting_proof' };
+    }
+
     if (withdrawal.status === 'awaiting_proof' || withdrawal.status === 'failed') {
-      const proofRaw = await publicClient.request({ method: 'zks_getL2ToL1LogProof', params: [withdrawal.l2_tx_hash, Number(withdrawal.l2_message_index || 0)] });
-      if (!proofRaw) {
+      const receipt = await publicClient.getTransactionReceipt({ hash: withdrawal.l2_tx_hash });
+      const messengerCandidates = getMessengerLogCandidates(receipt);
+      if (!messengerCandidates.length) throw new Error('Unable to find L1 messenger withdrawal log');
+
+      const indices = [...new Set([
+        Number(withdrawal.l2_message_index || 0),
+        ...messengerCandidates.map((item) => item.idx),
+        0
+      ])];
+      const proofResult = await getProofForIndices(withdrawal.l2_tx_hash, indices);
+      if (!proofResult) {
         await pool.query(
           `UPDATE withdrawals SET status='awaiting_proof', retry_count = retry_count + 1, next_retry_at = now() + ($2::text || ' milliseconds')::interval, updated_at = now() WHERE proposal_id=$1`,
           [withdrawal.proposal_id, String(nextRetryMs(withdrawal.retry_count || 0))]
@@ -805,17 +971,14 @@ async function processSingleWithdrawal(withdrawal) {
         return;
       }
 
-      const l2BatchNumber = Number(proofRaw.batch_number);
-      const l2MessageIndex = Number(0);
-      // This is not valid -- FIXME - this should be taken from somewhere else.
-      const l2TxNumberInBatch = Number(0);
-      const merkleProof = proofRaw.proof;
+      const messengerLog = messengerCandidates.find((item) => item.idx === proofResult.index) || messengerCandidates[0];
+      const message = unwrapMessageBytes(messengerLog.log.data);
+      const l2BatchNumber = Number(proofResult.proofRaw.batch_number ?? proofResult.proofRaw.l1_batch_number);
+      const l2MessageIndex = Number(proofResult.index);
+      const l2TxNumberInBatch = Number(proofResult.proofRaw.id?.txNumberInBatch || 0);
+      const merkleProof = proofResult.proofRaw.proof;
       if (!Number.isFinite(l2BatchNumber)) throw new Error('Proof missing l2 batch number');
 
-      const receipt = await publicClient.getTransactionReceipt({ hash: withdrawal.l2_tx_hash });
-      const messengerLog = receipt.logs.find((log) => log.address?.toLowerCase() === L1_MESSENGER);
-      if (!messengerLog?.data) throw new Error('Unable to find L1 messenger log for withdrawal message');
-      const message = unwrapMessageBytes(messengerLog.data);
       await pool.query(
         `UPDATE withdrawals
          SET status='finalizing_l1', l2_batch_number=$2, l2_message_index=$3, l2_tx_number_in_batch=$4,
@@ -827,7 +990,7 @@ async function processSingleWithdrawal(withdrawal) {
           l2MessageIndex,
           l2TxNumberInBatch,
           JSON.stringify(merkleProof),
-          JSON.stringify(proofRaw),
+          JSON.stringify(proofResult.proofRaw),
           message
         ]
       );
@@ -857,7 +1020,7 @@ async function processSingleWithdrawal(withdrawal) {
           chainId: BigInt(config.l2ChainId),
           l2BatchNumber: BigInt(withdrawal.l2_batch_number),
           l2MessageIndex: BigInt(withdrawal.l2_message_index || 0),
-          l2Sender: normalizeAddress(withdrawal.l2_sender || L2_BASE_TOKEN),
+          l2Sender: normalizeAddress(withdrawal.l2_sender || (withdrawal.asset_type === 'erc20' ? L2_ASSET_ROUTER : L2_BASE_TOKEN)),
           l2TxNumberInBatch: Number(withdrawal.l2_tx_number_in_batch || 0),
           message: withdrawal.message,
           merkleProof
@@ -881,7 +1044,7 @@ export async function processPendingWithdrawals() {
   const rows = await pool.query(
     `SELECT * FROM withdrawals
      WHERE (
-       status IN ('awaiting_proof','finalizing_l1')
+       status IN ('executed_l2','awaiting_proof','finalizing_l1')
        OR (status = 'failed' AND next_retry_at IS NOT NULL AND next_retry_at <= now())
      )
      AND (next_retry_at IS NULL OR next_retry_at <= now())

@@ -11,6 +11,7 @@ const PROPOSAL_MODES = [
   { key: 'erc20', label: 'ERC20 Transfer' },
   { key: 'native', label: 'ETH Transfer' },
   { key: 'withdraw', label: 'Withdraw to L1 (Base token)' },
+  { key: 'withdrawErc20', label: 'Withdraw to L1 (ERC20)' },
   { key: 'custom', label: 'Custom Call' }
 ];
 
@@ -83,6 +84,13 @@ const getProposalStatus = (proposal, myAddress) => {
   if (!hasMySig) return { key: 'needsSig', label: 'Needs your signature' };
   return { key: 'waiting', label: 'Waiting for others' };
 };
+
+
+const proposalTypeFilters = [
+  { key: 'all', label: 'All proposals' },
+  { key: 'withdrawals', label: 'Withdrawals' },
+  { key: 'other', label: 'Other txs' }
+];
 
 const statusFilters = [
   { key: 'all', label: 'All' },
@@ -159,6 +167,7 @@ export default function App() {
   const [mainTab, setMainTab] = useState('safes');
   const [safeTab, setSafeTab] = useState('overview');
   const [proposalFilter, setProposalFilter] = useState('all');
+  const [proposalTypeFilter, setProposalTypeFilter] = useState('all');
   const [me, setMe] = useState(null);
   const [safes, setSafes] = useState([]);
   const [loadingSafes, setLoadingSafes] = useState(false);
@@ -191,6 +200,7 @@ export default function App() {
   const [nativeAmount, setNativeAmount] = useState('');
   const [withdrawRecipient, setWithdrawRecipient] = useState('');
   const [withdrawAmount, setWithdrawAmount] = useState('');
+  const [withdrawTokenAddress, setWithdrawTokenAddress] = useState('');
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [customTo, setCustomTo] = useState('');
   const [customValue, setCustomValue] = useState('0');
@@ -306,7 +316,11 @@ export default function App() {
     if (tokens.length && !selectedToken) {
       setSelectedToken(tokens[0].address);
     }
-  }, [tokens, selectedToken]);
+    const withdrawables = tokens.filter((token) => token.withdrawToL1);
+    if (withdrawables.length && !withdrawTokenAddress) {
+      setWithdrawTokenAddress(withdrawables[0].address);
+    }
+  }, [tokens, selectedToken, withdrawTokenAddress]);
 
   useEffect(() => {
     if (!selectedAddressBookEntryId) return;
@@ -359,6 +373,8 @@ export default function App() {
   };
 
   const selectedTokenConfig = tokens.find((token) => token.address === selectedToken);
+  const withdrawableTokens = tokens.filter((token) => token.withdrawToL1);
+  const selectedWithdrawToken = withdrawableTokens.find((token) => token.address === withdrawTokenAddress);
 
   const proposalPreview = useMemo(() => {
     if (proposalMode === 'erc20') {
@@ -373,9 +389,13 @@ export default function App() {
       if (!withdrawRecipient || !withdrawAmount) return 'Fill in L1 recipient and amount.';
       return `Withdraw ${withdrawAmount} ${prividium.chain.nativeCurrency.symbol} to L1 recipient ${withdrawRecipient}`;
     }
+    if (proposalMode === 'withdrawErc20') {
+      if (!selectedWithdrawToken || !withdrawRecipient || !withdrawAmount) return 'Fill in token, L1 recipient, and amount.';
+      return `Withdraw ${withdrawAmount} ${selectedWithdrawToken.symbol} to L1 recipient ${withdrawRecipient}`;
+    }
     if (!customTo) return 'Fill in target address and optional calldata.';
     return `Call ${customTo} (${customData || '0x'})`;
-  }, [proposalMode, selectedTokenConfig, recipient, amount, nativeRecipient, nativeAmount, withdrawRecipient, withdrawAmount, customTo, customData]);
+  }, [proposalMode, selectedTokenConfig, selectedWithdrawToken, recipient, amount, nativeRecipient, nativeAmount, withdrawRecipient, withdrawAmount, customTo, customData]);
 
   const buildProposalTx = () => {
     if (proposalMode === 'erc20') {
@@ -439,6 +459,20 @@ export default function App() {
       };
     }
 
+    if (proposalMode === 'withdrawErc20') {
+      if (!selectedWithdrawToken) throw new Error('Choose a withdrawable ERC20 token');
+      if (!isAddress(withdrawRecipient)) throw new Error('Recipient must be a valid L1 address');
+      if (!withdrawAmount || Number(withdrawAmount) <= 0) throw new Error('Amount must be greater than 0');
+      return {
+        mode: 'withdrawErc20',
+        withdrawalErc20: {
+          tokenAddress: selectedWithdrawToken.address,
+          recipient: withdrawRecipient,
+          amount: withdrawAmount
+        }
+      };
+    }
+
     if (!isAddress(customTo)) throw new Error('Target must be a valid address');
     if (!/^0x([0-9a-fA-F]{2})*$/.test(customData || '')) throw new Error('Calldata must be valid hex');
     return {
@@ -461,6 +495,15 @@ export default function App() {
         method: 'POST',
         body: JSON.stringify({ recipient: tx.withdrawal.recipient, amount: tx.withdrawal.amount })
       });
+    } else if (proposalMode === 'withdrawErc20') {
+      await api(`/v1/safes/${route.safeAddress}/withdrawals/erc20`, {
+        method: 'POST',
+        body: JSON.stringify({
+          tokenAddress: tx.withdrawalErc20.tokenAddress,
+          recipient: tx.withdrawalErc20.recipient,
+          amount: tx.withdrawalErc20.amount
+        })
+      });
     } else {
       await api(`/v1/safes/${route.safeAddress}/transactions`, {
         method: 'POST',
@@ -476,6 +519,7 @@ export default function App() {
     setNativeRecipient('');
     setWithdrawAmount('');
     setWithdrawRecipient('');
+    setWithdrawTokenAddress('');
     const txs = await api(`/v1/safes/${route.safeAddress}/transactions`);
     setProposals(txs.results || []);
   };
@@ -573,7 +617,13 @@ export default function App() {
     status: getProposalStatus(proposal, me?.address)
   })), [proposals, me?.address]);
 
-  const filteredProposals = categorized.filter((item) => proposalFilter === 'all' || item.status.key === proposalFilter);
+  const filteredProposals = categorized.filter((item) => {
+    const statusMatch = proposalFilter === 'all' || item.status.key === proposalFilter;
+    const typeMatch = proposalTypeFilter === 'all'
+      || (proposalTypeFilter === 'withdrawals' && Boolean(item.proposal.withdrawal))
+      || (proposalTypeFilter === 'other' && !item.proposal.withdrawal);
+    return statusMatch && typeMatch;
+  });
 
   const onCopy = async (value) => {
     await navigator.clipboard.writeText(value);
@@ -591,6 +641,9 @@ export default function App() {
     }
     if (proposal.summary?.type === 'l2-to-l1-withdrawal') {
       return `Withdraw ${proposal.summary.amount} ${prividium.chain.nativeCurrency.symbol} to L1 ${proposal.summary.recipient}`;
+    }
+    if (proposal.summary?.type === 'l2-to-l1-withdrawal-erc20') {
+      return `Withdraw ${proposal.summary.amount} ${proposal.summary.tokenSymbol} to L1 ${proposal.summary.recipient}`;
     }
 
     if (tx.data === '0x') {
@@ -791,6 +844,7 @@ export default function App() {
 
               {safeTab === 'proposals' && (
                 <Card title="Proposals" action={<Button onClick={() => setProposalModalOpen(true)}>New Proposal</Button>}>
+                  <Tabs compact value={proposalTypeFilter} onChange={setProposalTypeFilter} tabs={proposalTypeFilters} />
                   <Tabs compact value={proposalFilter} onChange={setProposalFilter} tabs={statusFilters} />
 
                   {loadingProposals ? <Skeleton lines={5} /> : filteredProposals.length === 0 ? <p className="muted">No proposals in this category.</p> : (
@@ -814,7 +868,10 @@ export default function App() {
                                 <Badge tone={proposal.withdrawal.status === 'failed' ? 'warning' : proposal.withdrawal.status === 'finalized_l1' ? 'success' : 'info'}>
                                   Withdrawal: {proposal.withdrawal.status}
                                 </Badge>
-                                <p className="muted">Waiting for the batch to be posted to L1 (timing varies).</p>
+                                <p className="muted">Asset: {proposal.withdrawal.assetType === 'erc20' ? (proposal.withdrawal.token?.symbol || 'ERC20 token') : 'Base token'}</p>
+                                <p className="muted">Recipient: {proposal.withdrawal.recipient || proposal.summary?.recipient}</p>
+                                {proposal.summary?.amount && <p className="muted">Amount: {proposal.summary.amount}</p>}
+                                <p className="muted">{proposal.withdrawal.waitingHint || 'Waiting for batch finalization (timing varies).'}</p>
                                 <ul className="muted">
                                   {proposal.withdrawal.progress?.map((step) => (
                                     <li key={step.step}>{step.done ? '✓' : '○'} {step.step}</li>
@@ -932,6 +989,38 @@ export default function App() {
                   <p className="muted">method: withdraw(address)</p>
                   <p className="muted">value (wei): {toWeiPreview(withdrawAmount, prividium.chain.nativeCurrency.decimals)}</p>
                 </details>
+              </>
+            )}
+
+
+            {proposalMode === 'withdrawErc20' && (
+              <>
+                <label>Token</label>
+                <select value={withdrawTokenAddress} onChange={(e) => setWithdrawTokenAddress(e.target.value)}>
+                  {withdrawableTokens.map((token) => (
+                    <option value={token.address} key={token.address} title={token.address}>{token.symbol} · {token.name}</option>
+                  ))}
+                </select>
+                <label>L1 Recipient</label>
+                <select value={selectedAddressBookEntryId} onChange={(e) => {
+                  setSelectedAddressBookEntryId(e.target.value);
+                  if (!e.target.value) setWithdrawRecipient('');
+                  const entry = addressBook.find((item) => item.id === e.target.value);
+                  if (entry) setWithdrawRecipient(entry.address);
+                }}>
+                  <option value="">Enter raw address</option>
+                  {addressBook.map((entry) => (
+                    <option key={entry.id} value={entry.id}>{entry.label} · {shorten(entry.address)}</option>
+                  ))}
+                </select>
+                <input value={withdrawRecipient} onChange={(e) => setWithdrawRecipient(e.target.value)} placeholder="0x..." />
+                <label>Amount {selectedWithdrawToken ? `(${selectedWithdrawToken.symbol})` : ''}</label>
+                <input value={withdrawAmount} onChange={(e) => setWithdrawAmount(e.target.value)} placeholder="0.0" />
+                <div className="summary-box muted">
+                  <strong>How it works</strong>
+                  <p>Step 1: Safe executes withdrawal on L2.</p>
+                  <p>Step 2: once the batch is posted, anyone can finalize on L1; this service will do it for you.</p>
+                </div>
               </>
             )}
 
