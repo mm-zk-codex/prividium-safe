@@ -805,10 +805,11 @@ async function processSingleWithdrawal(withdrawal) {
         return;
       }
 
-      const l2BatchNumber = Number(proofRaw.l2BatchNumber ?? proofRaw.l1BatchNumber ?? proofRaw.id ?? proofRaw.batchNumber);
-      const l2MessageIndex = Number(proofRaw.l2MessageIndex ?? proofRaw.id ?? withdrawal.l2_message_index ?? 0);
-      const l2TxNumberInBatch = Number(proofRaw.l2TxNumberInBatch ?? proofRaw.txNumberInBatch ?? proofRaw.logProof?.txNumberInBatch ?? 0);
-      const merkleProof = proofRaw.proof || proofRaw.merkleProof || proofRaw.logProof?.proof || [];
+      const l2BatchNumber = Number(proofRaw.batch_number);
+      const l2MessageIndex = Number(0);
+      // This is not valid -- FIXME - this should be taken from somewhere else.
+      const l2TxNumberInBatch = Number(0);
+      const merkleProof = proofRaw.proof;
       if (!Number.isFinite(l2BatchNumber)) throw new Error('Proof missing l2 batch number');
 
       const receipt = await publicClient.getTransactionReceipt({ hash: withdrawal.l2_tx_hash });
