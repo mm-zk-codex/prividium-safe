@@ -96,3 +96,10 @@ CREATE TABLE IF NOT EXISTS withdrawals (
 
 CREATE INDEX IF NOT EXISTS idx_withdrawals_status ON withdrawals(status);
 CREATE INDEX IF NOT EXISTS idx_withdrawals_safe_address ON withdrawals(safe_address);
+
+
+ALTER TABLE withdrawals ADD COLUMN IF NOT EXISTS asset_type TEXT NOT NULL DEFAULT 'base';
+ALTER TABLE withdrawals ADD COLUMN IF NOT EXISTS l2_token_address TEXT NULL;
+ALTER TABLE withdrawals ADD COLUMN IF NOT EXISTS l1_token_address TEXT NULL;
+ALTER TABLE withdrawals ADD COLUMN IF NOT EXISTS calldata_summary JSONB NULL;
+ALTER TABLE withdrawals ADD COLUMN IF NOT EXISTS proof_kind TEXT NULL;

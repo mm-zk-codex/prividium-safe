@@ -1,6 +1,6 @@
 import { getAddress } from 'viem';
 import { config } from './config.js';
-import { SUPPORTED_TOKENS } from './config/tokens.js';
+import { SUPPORTED_TOKENS, WITHDRAWABLE_TOKENS } from './config/tokens.js';
 import { authFetch } from './prividiumAuth.js';
 import { createPublicClient, http } from 'viem';
 
@@ -24,6 +24,15 @@ export function getSupportedTokenAddresses() {
 
 export function isSupportedToken(address) {
   const supported = getSupportedTokenAddresses();
+  return supported.includes(normalize(address));
+}
+
+export function getWithdrawableTokenAddresses() {
+  return (WITHDRAWABLE_TOKENS[config.chainId] || []).map(normalize);
+}
+
+export function isWithdrawableToken(address) {
+  const supported = getWithdrawableTokenAddresses();
   return supported.includes(normalize(address));
 }
 
@@ -51,6 +60,10 @@ export async function getTokenMetadata(address) {
 
 export async function listSupportedTokens() {
   const supported = getSupportedTokenAddresses();
+  const withdrawable = new Set(getWithdrawableTokenAddresses());
   const tokens = await Promise.all(supported.map((address) => getTokenMetadata(address)));
-  return tokens;
+  return tokens.map((token) => ({
+    ...token,
+    withdrawToL1: withdrawable.has(token.address)
+  }));
 }
