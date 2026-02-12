@@ -398,8 +398,9 @@ function rowToProposal(row, confirmations) {
     createdAt: row.created_at.toISOString(),
     confirmations,
     confirmationsRequired: row.threshold,
-    executable: confirmations.length >= row.threshold && !row.executed_tx_hash,
+    executable: confirmations.length >= row.threshold && !row.executed_tx_hash && row.nonce_status !== 'rejected',
     executedTxHash: row.executed_tx_hash || undefined,
+    nonceStatus: row.nonce_status || 'active',
     isAdvanced: Boolean(row.is_advanced),
     summary: typeof row.summary === 'string' ? JSON.parse(row.summary) : row.summary || undefined,
     withdrawal: mapWithdrawalRow(row, fallbackStatus)
@@ -524,6 +525,17 @@ async function normalizeProposalInput(input) {
 export async function getProposalByHash(safeTxHash) {
   const base = await pool.query(
     `SELECT p.*, s.threshold,
+      CASE
+        WHEN p.executed_tx_hash IS NOT NULL THEN 'executed'
+        WHEN EXISTS (
+          SELECT 1 FROM proposals p2
+          WHERE p2.safe_address = p.safe_address
+            AND p2.nonce = p.nonce
+            AND p2.executed_tx_hash IS NOT NULL
+            AND p2.id <> p.id
+        ) THEN 'rejected'
+        ELSE 'active'
+      END AS nonce_status,
       w.proposal_id AS withdrawal_proposal_id,
       w.status AS withdrawal_status,
       w.l2_tx_hash AS withdrawal_l2_tx_hash,
@@ -551,6 +563,17 @@ export async function getProposalByHash(safeTxHash) {
 export async function listProposalsForSafe(safeAddress) {
   const rows = await pool.query(
     `SELECT p.*, s.threshold,
+      CASE
+        WHEN p.executed_tx_hash IS NOT NULL THEN 'executed'
+        WHEN EXISTS (
+          SELECT 1 FROM proposals p2
+          WHERE p2.safe_address = p.safe_address
+            AND p2.nonce = p.nonce
+            AND p2.executed_tx_hash IS NOT NULL
+            AND p2.id <> p.id
+        ) THEN 'rejected'
+        ELSE 'active'
+      END AS nonce_status,
       w.proposal_id AS withdrawal_proposal_id,
       w.status AS withdrawal_status,
       w.l2_tx_hash AS withdrawal_l2_tx_hash,
@@ -784,6 +807,11 @@ export async function addConfirmation({ safeTxHash, ownerAddress, signature }) {
     err.status = 404;
     throw err;
   }
+  if (proposal.nonceStatus === 'rejected') {
+    const err = new Error('Proposal uses a nonce already executed by another proposal – this proposal is rejected.');
+    err.status = 400;
+    throw err;
+  }
   const typedData = buildSafeTxTypedData({
     chainId: config.chainId,
     safeAddress: proposal.safeAddress,
@@ -850,6 +878,11 @@ export async function executeProposal(safeTxHash) {
   if (!proposal) {
     const err = new Error('Proposal not found');
     err.status = 404;
+    throw err;
+  }
+  if (proposal.nonceStatus === 'rejected') {
+    const err = new Error('Proposal uses a nonce already executed by another proposal – this proposal is rejected.');
+    err.status = 400;
     throw err;
   }
   if (!proposal.executable) {
