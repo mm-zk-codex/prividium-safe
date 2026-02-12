@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS proposals (
 
 ALTER TABLE proposals ADD COLUMN IF NOT EXISTS is_advanced BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE proposals ADD COLUMN IF NOT EXISTS summary JSONB NULL;
+CREATE INDEX IF NOT EXISTS idx_proposals_safe_nonce ON proposals(safe_address, nonce);
 
 CREATE TABLE IF NOT EXISTS signatures (
   proposal_id UUID NOT NULL REFERENCES proposals(id) ON DELETE CASCADE,
