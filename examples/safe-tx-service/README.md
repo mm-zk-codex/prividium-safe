@@ -51,6 +51,7 @@ PRIVIDIUM_RPC_URL=https://<prividium-rpc>/rpc
 PRIVIDIUM_PERMISSIONS_API_BASE_URL=https://<permissions-api-base>
 SERVICE_PRIVATE_KEY=0x...
 CHAIN_ID=7777
+MULTISEND_ADDRESS=0x...           # Safe MultiSend contract for CHAIN_ID (or use MULTISEND_ADDRESS_BY_CHAIN JSON)
 PORT=4010
 SAFE_FACTORY_ADDRESS=0x...        # required for POST /v1/safes create
 SAFE_SINGLETON_ADDRESS=0x...      # required for POST /v1/safes create
@@ -178,5 +179,4 @@ deploying "SafeMigration" (tx: 0x8b913db9ba1404cdbd3ec18e6719fd2628ee787f43b1916
 
 * SafeProxyFactory - this is what we'll be calling to create a new safe
 * Safe - this is so called 'safe singleton'.
-
 

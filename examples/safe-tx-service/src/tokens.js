@@ -3,6 +3,7 @@ import { config } from './config.js';
 import { SUPPORTED_TOKENS, WITHDRAWABLE_TOKENS } from './config/tokens.js';
 import { authFetch } from './prividiumAuth.js';
 import { createPublicClient, http } from 'viem';
+import { getErc20WithdrawalParams } from './erc20Withdrawal.js';
 
 const ERC20_METADATA_ABI = [
   { type: 'function', name: 'name', stateMutability: 'view', inputs: [], outputs: [{ type: 'string' }] },
@@ -62,8 +63,23 @@ export async function listSupportedTokens() {
   const supported = getSupportedTokenAddresses();
   const withdrawable = new Set(getWithdrawableTokenAddresses());
   const tokens = await Promise.all(supported.map((address) => getTokenMetadata(address)));
-  return tokens.map((token) => ({
-    ...token,
-    withdrawToL1: withdrawable.has(token.address)
+
+  return Promise.all(tokens.map(async (token) => {
+    const canWithdraw = withdrawable.has(token.address);
+    if (!canWithdraw) {
+      return {
+        ...token,
+        withdrawToL1: false
+      };
+    }
+
+    const withdrawal = await getErc20WithdrawalParams(token.address);
+    return {
+      ...token,
+      withdrawToL1: true,
+      l1TokenAddress: withdrawal.l1TokenAddress,
+      spender: withdrawal.spender,
+      withdrawContract: withdrawal.withdrawTo
+    };
   }));
 }
