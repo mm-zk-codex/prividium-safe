@@ -894,6 +894,16 @@ export default function App() {
                                 )}
                                 <p className="muted">Recipient: {proposal.withdrawal.recipient || proposal.summary?.recipient}</p>
                                 {proposal.summary?.amount && <p className="muted">Amount: {proposal.summary.amount}</p>}
+                                {proposal.summary?.type === 'l2-to-l1-withdrawal-erc20' && Array.isArray(proposal.summary?.batchedActions) && proposal.summary.batchedActions.length > 0 && (
+                                  <div className="summary-box muted">
+                                    <strong>This proposal contains {proposal.summary.batchedActions.length} actions</strong>
+                                    <ul>
+                                      {proposal.summary.batchedActions.map((action) => (
+                                        <li key={action}>{action}</li>
+                                      ))}
+                                    </ul>
+                                  </div>
+                                )}
                                 <p className="muted">{proposal.withdrawal.waitingHint || 'Waiting for batch finalization (timing varies).'}</p>
                                 <ul className="muted">
                                   {proposal.withdrawal.progress?.map((step) => (

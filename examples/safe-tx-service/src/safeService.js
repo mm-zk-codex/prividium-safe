@@ -20,7 +20,8 @@ import { pool } from './db.js';
 import { v4 as uuidv4 } from 'uuid';
 import { authFetch } from './prividiumAuth.js';
 import { getSupportedTokenAddresses, getTokenMetadata, isSupportedToken, isWithdrawableToken } from './tokens.js';
-import { getErc20WithdrawalParams, L2_ASSET_ROUTER, MULTICALL3 } from './erc20Withdrawal.js';
+import { getErc20WithdrawalParams, L2_ASSET_ROUTER } from './erc20Withdrawal.js';
+import { encodeMultiSendTransactions } from './multiSend.js';
 
 const SAFE_ABI = [
   { type: 'function', name: 'getOwners', stateMutability: 'view', inputs: [], outputs: [{ type: 'address[]' }] },
@@ -128,27 +129,12 @@ const ERC20_APPROVE_ABI = [{
   outputs: [{ name: '', type: 'bool' }]
 }];
 
-const MULTICALL3_ABI = [{
+const MULTISEND_ABI = [{
   type: 'function',
-  name: 'aggregate3',
+  name: 'multiSend',
   stateMutability: 'payable',
-  inputs: [{
-    name: 'calls',
-    type: 'tuple[]',
-    components: [
-      { name: 'target', type: 'address' },
-      { name: 'allowFailure', type: 'bool' },
-      { name: 'callData', type: 'bytes' }
-    ]
-  }],
-  outputs: [{
-    name: 'returnData',
-    type: 'tuple[]',
-    components: [
-      { name: 'success', type: 'bool' },
-      { name: 'returnData', type: 'bytes' }
-    ]
-  }]
+  inputs: [{ name: 'transactions', type: 'bytes' }],
+  outputs: []
 }];
 
 const BRIDGEHUB_ABI = [{
@@ -708,8 +694,17 @@ export async function createErc20WithdrawalProposal({ safeAddress, createdBy, to
     tokenAddress: metadata.address,
     l1TokenAddress: withdrawalParams.l1TokenAddress,
     recipient: normalizeAddress(recipient),
-    amount: String(amount)
+    amount: String(amount),
+    batchedActions: [
+      `Approve ${metadata.symbol} spending`,
+      `Withdraw ${metadata.symbol} to L1`
+    ]
   };
+
+  const batchBytes = encodeMultiSendTransactions([
+    { operation: 0, to: metadata.address, value: 0n, data: approveData },
+    { operation: 0, to: withdrawalParams.withdrawTo, value: 0n, data: withdrawData }
+  ]);
 
   const proposal = await createProposal({
     safeAddress,
@@ -718,24 +713,21 @@ export async function createErc20WithdrawalProposal({ safeAddress, createdBy, to
       mode: 'direct',
       advanced: false,
       tx: {
-        to: MULTICALL3,
+        to: config.multisendAddress,
         value: '0',
         data: encodeFunctionData({
-          abi: MULTICALL3_ABI,
-          functionName: 'aggregate3',
-          args: [[
-            { target: metadata.address, allowFailure: false, callData: approveData },
-            { target: withdrawalParams.withdrawTo, allowFailure: false, callData: withdrawData }
-          ]]
+          abi: MULTISEND_ABI,
+          functionName: 'multiSend',
+          args: [batchBytes]
         }),
-        operation: 0
+        operation: 1
       }
     }
   });
 
   await pool.query(
     `INSERT INTO withdrawals (proposal_id, safe_address, l1_recipient, amount_wei, status, asset_type, l2_token_address, l1_token_address, spender, uses_multicall3, calldata_summary, proof_kind, l2_sender)
-     VALUES ($1,$2,$3,$4,'proposed','erc20',$5,$6,$7,true,$8,'l2_to_l1_log_proof',$9)
+     VALUES ($1,$2,$3,$4,'proposed','erc20',$5,$6,$7,false,$8,'l2_to_l1_log_proof',$9)
      ON CONFLICT (proposal_id) DO NOTHING`,
     [
       proposal.id,
