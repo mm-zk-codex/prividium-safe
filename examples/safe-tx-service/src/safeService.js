@@ -5,7 +5,6 @@ import {
   createPublicClient,
   createWalletClient,
   decodeAbiParameters,
-  encodeAbiParameters,
   decodeEventLog,
   decodeFunctionData,
   formatUnits,
@@ -21,6 +20,7 @@ import { pool } from './db.js';
 import { v4 as uuidv4 } from 'uuid';
 import { authFetch } from './prividiumAuth.js';
 import { getSupportedTokenAddresses, getTokenMetadata, isSupportedToken, isWithdrawableToken } from './tokens.js';
+import { getErc20WithdrawalParams, L2_ASSET_ROUTER, MULTICALL3 } from './erc20Withdrawal.js';
 
 const SAFE_ABI = [
   { type: 'function', name: 'getOwners', stateMutability: 'view', inputs: [], outputs: [{ type: 'address[]' }] },
@@ -106,8 +106,6 @@ const ERC20_TRANSFER_ABI = [{
 
 const L2_BASE_TOKEN = '0x000000000000000000000000000000000000800a';
 const L1_MESSENGER = '0x0000000000000000000000000000000000008008';
-const L2_ASSET_ROUTER = '0x0000000000000000000000000000000000010003';
-const L2_NATIVE_TOKEN_VAULT = '0x0000000000000000000000000000000000010004';
 const WITHDRAWAL_MESSAGE_TOPIC_PREFIX = '0x3a36e472';
 
 const WITHDRAW_ABI = [{
@@ -119,23 +117,38 @@ const WITHDRAW_ABI = [{
 }];
 
 
-const L2_ASSET_ROUTER_ABI = [{
+const ERC20_APPROVE_ABI = [{
   type: 'function',
-  name: 'withdraw',
-  stateMutability: 'payable',
+  name: 'approve',
+  stateMutability: 'nonpayable',
   inputs: [
-    { name: 'assetId', type: 'bytes32' },
-    { name: 'withdrawalData', type: 'bytes' }
+    { name: 'spender', type: 'address' },
+    { name: 'value', type: 'uint256' }
   ],
-  outputs: []
+  outputs: [{ name: '', type: 'bool' }]
 }];
 
-const L2_NATIVE_TOKEN_VAULT_ABI = [{
+const MULTICALL3_ABI = [{
   type: 'function',
-  name: 'assetId',
-  stateMutability: 'view',
-  inputs: [{ name: 'token', type: 'address' }],
-  outputs: [{ type: 'bytes32' }]
+  name: 'aggregate3',
+  stateMutability: 'payable',
+  inputs: [{
+    name: 'calls',
+    type: 'tuple[]',
+    components: [
+      { name: 'target', type: 'address' },
+      { name: 'allowFailure', type: 'bool' },
+      { name: 'callData', type: 'bytes' }
+    ]
+  }],
+  outputs: [{
+    name: 'returnData',
+    type: 'tuple[]',
+    components: [
+      { name: 'success', type: 'bool' },
+      { name: 'returnData', type: 'bytes' }
+    ]
+  }]
 }];
 
 const BRIDGEHUB_ABI = [{
@@ -677,31 +690,23 @@ export async function createErc20WithdrawalProposal({ safeAddress, createdBy, to
     throw err;
   }
 
-  const assetId = await publicClient.readContract({
-    address: L2_NATIVE_TOKEN_VAULT,
-    abi: L2_NATIVE_TOKEN_VAULT_ABI,
-    functionName: 'assetId',
-    args: [normalizeAddress(tokenAddress)]
+  const withdrawalParams = await getErc20WithdrawalParams(metadata.address);
+  const approveData = encodeFunctionData({
+    abi: ERC20_APPROVE_ABI,
+    functionName: 'approve',
+    args: [withdrawalParams.spender, parsedAmount]
   });
-  if (!assetId || assetId === '0x0000000000000000000000000000000000000000000000000000000000000000') {
-    const err = new Error('Token is not registered in the L2 Native Token Vault');
-    err.status = 400;
-    throw err;
-  }
-
-  const withdrawData = encodeAbiParameters(
-    [
-      { name: 'amount', type: 'uint256' },
-      { name: 'recipient', type: 'address' },
-      { name: 'token', type: 'address' }
-    ],
-    [parsedAmount, normalizeAddress(recipient), '0x0000000000000000000000000000000000000000']
-  );
+  const withdrawCall = withdrawalParams.withdrawDataBuilder({
+    amountBaseUnits: parsedAmount,
+    recipient
+  });
+  const withdrawData = encodeFunctionData(withdrawCall);
 
   const summary = {
     type: 'l2-to-l1-withdrawal-erc20',
     tokenSymbol: metadata.symbol,
     tokenAddress: metadata.address,
+    l1TokenAddress: withdrawalParams.l1TokenAddress,
     recipient: normalizeAddress(recipient),
     amount: String(amount)
   };
@@ -713,12 +718,15 @@ export async function createErc20WithdrawalProposal({ safeAddress, createdBy, to
       mode: 'direct',
       advanced: false,
       tx: {
-        to: L2_ASSET_ROUTER,
+        to: MULTICALL3,
         value: '0',
         data: encodeFunctionData({
-          abi: L2_ASSET_ROUTER_ABI,
-          functionName: 'withdraw',
-          args: [assetId, withdrawData]
+          abi: MULTICALL3_ABI,
+          functionName: 'aggregate3',
+          args: [[
+            { target: metadata.address, allowFailure: false, callData: approveData },
+            { target: withdrawalParams.withdrawTo, allowFailure: false, callData: withdrawData }
+          ]]
         }),
         operation: 0
       }
@@ -726,8 +734,8 @@ export async function createErc20WithdrawalProposal({ safeAddress, createdBy, to
   });
 
   await pool.query(
-    `INSERT INTO withdrawals (proposal_id, safe_address, l1_recipient, amount_wei, status, asset_type, l2_token_address, calldata_summary, proof_kind, l2_sender)
-     VALUES ($1,$2,$3,$4,'proposed','erc20',$5,$6,'l2_to_l1_log_proof',$7)
+    `INSERT INTO withdrawals (proposal_id, safe_address, l1_recipient, amount_wei, status, asset_type, l2_token_address, l1_token_address, spender, uses_multicall3, calldata_summary, proof_kind, l2_sender)
+     VALUES ($1,$2,$3,$4,'proposed','erc20',$5,$6,$7,true,$8,'l2_to_l1_log_proof',$9)
      ON CONFLICT (proposal_id) DO NOTHING`,
     [
       proposal.id,
@@ -735,6 +743,8 @@ export async function createErc20WithdrawalProposal({ safeAddress, createdBy, to
       normalizeAddress(recipient),
       parsedAmount.toString(),
       metadata.address,
+      withdrawalParams.l1TokenAddress,
+      withdrawalParams.spender,
       JSON.stringify(summary),
       L2_ASSET_ROUTER
     ]

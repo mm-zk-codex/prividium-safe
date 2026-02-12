@@ -869,6 +869,29 @@ export default function App() {
                                   Withdrawal: {proposal.withdrawal.status}
                                 </Badge>
                                 <p className="muted">Asset: {proposal.withdrawal.assetType === 'erc20' ? (proposal.withdrawal.token?.symbol || 'ERC20 token') : 'Base token'}</p>
+                                {proposal.withdrawal.assetType === 'erc20' && proposal.withdrawal.token?.l2TokenAddress && (
+                                  <p className="muted">
+                                    L2 token: <span className="hash-full">{shorten(proposal.withdrawal.token.l2TokenAddress)}</span>{' '}
+                                    <button className="icon-btn" onClick={() => onCopy(proposal.withdrawal.token.l2TokenAddress).catch(() => addToast('Copy failed', 'error'))}>Copy</button>
+                                  </p>
+                                )}
+                                {proposal.withdrawal.assetType === 'erc20' && (proposal.withdrawal.token?.l1TokenAddress || proposal.summary?.l1TokenAddress) && (
+                                  <p className="muted">
+                                    L1 token:{' '}
+                                    {l1Explorer ? (
+                                      <a
+                                        href={`${l1Explorer.replace(/\/$/, '')}/address/${proposal.withdrawal.token?.l1TokenAddress || proposal.summary?.l1TokenAddress}`}
+                                        target="_blank"
+                                        rel="noreferrer"
+                                      >
+                                        {shorten(proposal.withdrawal.token?.l1TokenAddress || proposal.summary?.l1TokenAddress)}
+                                      </a>
+                                    ) : (
+                                      <span className="hash-full">{shorten(proposal.withdrawal.token?.l1TokenAddress || proposal.summary?.l1TokenAddress)}</span>
+                                    )}{' '}
+                                    <button className="icon-btn" onClick={() => onCopy(proposal.withdrawal.token?.l1TokenAddress || proposal.summary?.l1TokenAddress).catch(() => addToast('Copy failed', 'error'))}>Copy</button>
+                                  </p>
+                                )}
                                 <p className="muted">Recipient: {proposal.withdrawal.recipient || proposal.summary?.recipient}</p>
                                 {proposal.summary?.amount && <p className="muted">Amount: {proposal.summary.amount}</p>}
                                 <p className="muted">{proposal.withdrawal.waitingHint || 'Waiting for batch finalization (timing varies).'}</p>
@@ -1001,6 +1024,17 @@ export default function App() {
                     <option value={token.address} key={token.address} title={token.address}>{token.symbol} · {token.name}</option>
                   ))}
                 </select>
+                {selectedWithdrawToken?.l1TokenAddress && (
+                  <p className="muted">
+                    L1 token:{' '}
+                    {l1Explorer ? (
+                      <a href={`${l1Explorer.replace(/\/$/, '')}/address/${selectedWithdrawToken.l1TokenAddress}`} target="_blank" rel="noreferrer">{shorten(selectedWithdrawToken.l1TokenAddress)}</a>
+                    ) : (
+                      shorten(selectedWithdrawToken.l1TokenAddress)
+                    )}{' '}
+                    <button className="icon-btn" onClick={() => onCopy(selectedWithdrawToken.l1TokenAddress).catch(() => addToast('Copy failed', 'error'))}>Copy</button>
+                  </p>
+                )}
                 <label>L1 Recipient</label>
                 <select value={selectedAddressBookEntryId} onChange={(e) => {
                   setSelectedAddressBookEntryId(e.target.value);
