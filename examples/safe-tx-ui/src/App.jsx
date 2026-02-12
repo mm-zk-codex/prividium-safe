@@ -8,8 +8,9 @@ import {
 import { API_BASE_URL, prividium } from './prividium';
 
 const PROPOSAL_MODES = [
-  { key: 'erc20', label: 'ERC-20 Transfer' },
-  { key: 'native', label: 'Base Token Transfer' },
+  { key: 'erc20', label: 'ERC20 Transfer' },
+  { key: 'native', label: 'ETH Transfer' },
+  { key: 'withdraw', label: 'Withdraw to L1 (Base token)' },
   { key: 'custom', label: 'Custom Call' }
 ];
 
@@ -34,6 +35,16 @@ const formatTokenAmount = (raw, decimals, max = 6) => {
   const value = Number(raw || 0) / 10 ** Number(decimals || 0);
   if (!Number.isFinite(value)) return '0';
   return value.toLocaleString(undefined, { maximumFractionDigits: max });
+};
+
+
+const toWeiPreview = (amount, decimals) => {
+  try {
+    if (!amount) return '0';
+    return parseUnits(amount, decimals).toString();
+  } catch (_error) {
+    return 'invalid amount';
+  }
 };
 
 const formatTimestamp = (iso) => {
@@ -178,6 +189,8 @@ export default function App() {
   const [amount, setAmount] = useState('');
   const [nativeRecipient, setNativeRecipient] = useState('');
   const [nativeAmount, setNativeAmount] = useState('');
+  const [withdrawRecipient, setWithdrawRecipient] = useState('');
+  const [withdrawAmount, setWithdrawAmount] = useState('');
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [customTo, setCustomTo] = useState('');
   const [customValue, setCustomValue] = useState('0');
@@ -187,6 +200,8 @@ export default function App() {
 
   const isAuthed = useMemo(() => prividium.isAuthorized(), [me]);
   const myAddress = me?.address?.toLowerCase();
+  const l2Explorer = import.meta.env.VITE_EXPLORER_URL;
+  const l1Explorer = import.meta.env.VITE_L1_EXPLORER_URL || '';
 
   const addToast = (message, type = 'success') => {
     const id = crypto.randomUUID();
@@ -354,9 +369,13 @@ export default function App() {
       if (!nativeRecipient || !nativeAmount) return 'Fill in recipient and base token amount.';
       return `Send ${nativeAmount} ${prividium.chain.nativeCurrency.symbol} to ${nativeRecipient}`;
     }
+    if (proposalMode === 'withdraw') {
+      if (!withdrawRecipient || !withdrawAmount) return 'Fill in L1 recipient and amount.';
+      return `Withdraw ${withdrawAmount} ${prividium.chain.nativeCurrency.symbol} to L1 recipient ${withdrawRecipient}`;
+    }
     if (!customTo) return 'Fill in target address and optional calldata.';
     return `Call ${customTo} (${customData || '0x'})`;
-  }, [proposalMode, selectedTokenConfig, recipient, amount, nativeRecipient, nativeAmount, customTo, customData]);
+  }, [proposalMode, selectedTokenConfig, recipient, amount, nativeRecipient, nativeAmount, withdrawRecipient, withdrawAmount, customTo, customData]);
 
   const buildProposalTx = () => {
     if (proposalMode === 'erc20') {
@@ -407,6 +426,19 @@ export default function App() {
       };
     }
 
+
+    if (proposalMode === 'withdraw') {
+      if (!isAddress(withdrawRecipient)) throw new Error('Recipient must be a valid L1 address');
+      if (!withdrawAmount || Number(withdrawAmount) <= 0) throw new Error('Amount must be greater than 0');
+      return {
+        mode: 'withdraw',
+        withdrawal: {
+          recipient: withdrawRecipient,
+          amount: withdrawAmount
+        }
+      };
+    }
+
     if (!isAddress(customTo)) throw new Error('Target must be a valid address');
     if (!/^0x([0-9a-fA-F]{2})*$/.test(customData || '')) throw new Error('Calldata must be valid hex');
     return {
@@ -424,10 +456,17 @@ export default function App() {
   const propose = async () => {
     setProposalError('');
     const tx = buildProposalTx();
-    await api(`/v1/safes/${route.safeAddress}/transactions`, {
-      method: 'POST',
-      body: JSON.stringify({ tx })
-    });
+    if (proposalMode === 'withdraw') {
+      await api(`/v1/safes/${route.safeAddress}/withdrawals`, {
+        method: 'POST',
+        body: JSON.stringify({ recipient: tx.withdrawal.recipient, amount: tx.withdrawal.amount })
+      });
+    } else {
+      await api(`/v1/safes/${route.safeAddress}/transactions`, {
+        method: 'POST',
+        body: JSON.stringify({ tx })
+      });
+    }
     addToast('Proposal created');
     setProposalModalOpen(false);
     setAmount('');
@@ -435,6 +474,8 @@ export default function App() {
     setSelectedAddressBookEntryId('');
     setNativeAmount('');
     setNativeRecipient('');
+    setWithdrawAmount('');
+    setWithdrawRecipient('');
     const txs = await api(`/v1/safes/${route.safeAddress}/transactions`);
     setProposals(txs.results || []);
   };
@@ -475,6 +516,13 @@ export default function App() {
     const txs = await api(`/v1/safes/${route.safeAddress}/transactions`);
     setProposals(txs.results || []);
     await loadAddressBook(route.safeAddress);
+  };
+
+  const retryFinalize = async (proposalId) => {
+    await api(`/v1/withdrawals/${proposalId}/retry`, { method: 'POST' });
+    addToast('Retry queued');
+    const txs = await api(`/v1/safes/${route.safeAddress}/transactions`);
+    setProposals(txs.results || []);
   };
 
   const saveAddressBookEntry = async () => {
@@ -540,6 +588,9 @@ export default function App() {
     }
     if (proposal.summary?.type === 'advanced') {
       return 'Custom calldata';
+    }
+    if (proposal.summary?.type === 'l2-to-l1-withdrawal') {
+      return `Withdraw ${proposal.summary.amount} ${prividium.chain.nativeCurrency.symbol} to L1 ${proposal.summary.recipient}`;
     }
 
     if (tx.data === '0x') {
@@ -758,9 +809,30 @@ export default function App() {
                             <p>{summaryFromProposal(proposal)}</p>
                             <p className="to-line"><span className="muted">To:</span> <span className="hash-full">{addressBookByAddress.get((tx.to || '').toLowerCase()) ? `${addressBookByAddress.get((tx.to || '').toLowerCase()).label} (${shorten(tx.to)})` : tx.to}</span></p>
                             <p className="ellipsis muted">{proposal.safeTxHash}</p>
+                            {proposal.withdrawal && (
+                              <div className="stack">
+                                <Badge tone={proposal.withdrawal.status === 'failed' ? 'warning' : proposal.withdrawal.status === 'finalized_l1' ? 'success' : 'info'}>
+                                  Withdrawal: {proposal.withdrawal.status}
+                                </Badge>
+                                <p className="muted">Waiting for the batch to be posted to L1 (timing varies).</p>
+                                <ul className="muted">
+                                  {proposal.withdrawal.progress?.map((step) => (
+                                    <li key={step.step}>{step.done ? '✓' : '○'} {step.step}</li>
+                                  ))}
+                                </ul>
+                                {proposal.withdrawal.l2TxHash && (
+                                  <p className="muted">L2 Tx: {l2Explorer ? <a href={`${l2Explorer.replace(/\/$/, '')}/tx/${proposal.withdrawal.l2TxHash}`} target="_blank" rel="noreferrer">{shorten(proposal.withdrawal.l2TxHash)}</a> : <button className="icon-btn" onClick={() => onCopy(proposal.withdrawal.l2TxHash).catch(() => addToast('Copy failed', 'error'))}>{shorten(proposal.withdrawal.l2TxHash)}</button>}</p>
+                                )}
+                                {proposal.withdrawal.l1TxHash && (
+                                  <p className="muted">L1 Tx: {l1Explorer ? <a href={`${l1Explorer.replace(/\/$/, '')}/tx/${proposal.withdrawal.l1TxHash}`} target="_blank" rel="noreferrer">{shorten(proposal.withdrawal.l1TxHash)}</a> : <button className="icon-btn" onClick={() => onCopy(proposal.withdrawal.l1TxHash).catch(() => addToast('Copy failed', 'error'))}>{shorten(proposal.withdrawal.l1TxHash)}</button>}</p>
+                                )}
+                                {proposal.withdrawal.lastError && <p className="error">{proposal.withdrawal.lastError}</p>}
+                              </div>
+                            )}
                             <div className="inline">
                               {isNeedsSig && <Button variant="secondary" onClick={() => confirm(proposal).catch((e) => addToast(e.message, 'error'))}>Sign</Button>}
                               {isReady && <Button onClick={() => execute(proposal).catch((e) => addToast(e.message, 'error'))}>Execute</Button>}
+                              {proposal.withdrawal?.status === 'failed' && <Button variant="secondary" onClick={() => retryFinalize(proposal.id).catch((e) => addToast(e.message, 'error'))}>Retry finalize</Button>}
                               {status.key === 'executed' && proposal.executedTxHash && (
                                 <button className="icon-btn" onClick={() => onCopy(proposal.executedTxHash).catch(() => addToast('Copy failed', 'error'))}>
                                   Tx {shorten(proposal.executedTxHash)}
@@ -833,6 +905,33 @@ export default function App() {
                 <input value={nativeRecipient} onChange={(e) => setNativeRecipient(e.target.value)} placeholder="0x..." />
                 <label>Amount ({prividium.chain.nativeCurrency.symbol})</label>
                 <input value={nativeAmount} onChange={(e) => setNativeAmount(e.target.value)} placeholder="0.0" />
+              </>
+            )}
+
+            {proposalMode === 'withdraw' && (
+              <>
+                <label>L1 Recipient</label>
+                <select value={selectedAddressBookEntryId} onChange={(e) => {
+                  setSelectedAddressBookEntryId(e.target.value);
+                  if (!e.target.value) setWithdrawRecipient('');
+                  const entry = addressBook.find((item) => item.id === e.target.value);
+                  if (entry) setWithdrawRecipient(entry.address);
+                }}>
+                  <option value="">Enter raw address</option>
+                  {addressBook.map((entry) => (
+                    <option key={entry.id} value={entry.id}>{entry.label} · {shorten(entry.address)}</option>
+                  ))}
+                </select>
+                <input value={withdrawRecipient} onChange={(e) => setWithdrawRecipient(e.target.value)} placeholder="0x..." />
+                <label>Amount ({prividium.chain.nativeCurrency.symbol})</label>
+                <input value={withdrawAmount} onChange={(e) => setWithdrawAmount(e.target.value)} placeholder="0.0" />
+                <p className="muted">This creates an L2 burn. Finalization on L1 happens later when the batch is posted. Anyone can finalize; this service will do it for you.</p>
+                <details>
+                  <summary>Advanced details</summary>
+                  <p className="muted">to: 0x000000000000000000000000000000000000800a</p>
+                  <p className="muted">method: withdraw(address)</p>
+                  <p className="muted">value (wei): {toWeiPreview(withdrawAmount, prividium.chain.nativeCurrency.decimals)}</p>
+                </details>
               </>
             )}
 

@@ -71,3 +71,28 @@ CREATE TABLE IF NOT EXISTS address_book_audit (
 
 CREATE INDEX IF NOT EXISTS idx_address_book_safe ON address_book(safe_address);
 CREATE INDEX IF NOT EXISTS idx_address_book_audit_safe_changed_at ON address_book_audit(safe_address, changed_at DESC);
+
+CREATE TABLE IF NOT EXISTS withdrawals (
+  proposal_id UUID PRIMARY KEY REFERENCES proposals(id) ON DELETE CASCADE,
+  safe_address TEXT NOT NULL REFERENCES safes(safe_address) ON DELETE CASCADE,
+  l2_tx_hash TEXT NULL,
+  l1_tx_hash TEXT NULL,
+  l1_recipient TEXT NOT NULL,
+  amount_wei TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('proposed', 'awaiting_signatures', 'ready_to_execute', 'executed_l2', 'awaiting_proof', 'finalizing_l1', 'finalized_l1', 'failed')),
+  last_error TEXT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  l2_batch_number BIGINT NULL,
+  l2_message_index BIGINT NOT NULL DEFAULT 0,
+  l2_tx_number_in_batch INT NULL,
+  l2_sender TEXT NOT NULL DEFAULT '0x000000000000000000000000000000000000800a',
+  message TEXT NULL,
+  merkle_proof JSONB NULL,
+  proof_raw JSONB NULL,
+  next_retry_at TIMESTAMPTZ NULL,
+  retry_count INT NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_withdrawals_status ON withdrawals(status);
+CREATE INDEX IF NOT EXISTS idx_withdrawals_safe_address ON withdrawals(safe_address);

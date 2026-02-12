@@ -7,6 +7,7 @@ import {
   assertOwner,
   createProposal,
   createSafe,
+  createWithdrawalProposal,
   executeProposal,
   getLatestBlockNumber,
   getProposalByHash,
@@ -22,7 +23,9 @@ import {
   listAddressBookEntries,
   createAddressBookEntry,
   updateAddressBookEntry,
-  deleteAddressBookEntry
+  deleteAddressBookEntry,
+  processPendingWithdrawals,
+  retryWithdrawalFinalize
 } from './safeService.js';
 import { listSupportedTokens } from './tokens.js';
 
@@ -135,6 +138,17 @@ app.post('/v1/safes/:safeAddress/transactions', async (req, res) => {
   res.status(201).json(proposal);
 });
 
+app.post('/v1/safes/:safeAddress/withdrawals', async (req, res) => {
+  await assertOwner(req.params.safeAddress, req.auth.userAddress);
+  const proposal = await createWithdrawalProposal({
+    safeAddress: req.params.safeAddress,
+    createdBy: req.auth.userAddress,
+    recipient: req.body?.recipient,
+    amount: req.body?.amount
+  });
+  res.status(201).json(proposal);
+});
+
 app.post('/v1/transactions/:safeTxHash/confirmations', async (req, res) => {
   const { signature } = req.body;
   if (!signature) return res.status(400).json({ error: 'signature is required' });
@@ -159,6 +173,15 @@ app.post('/v1/transactions/:safeTxHash/execute', async (req, res) => {
   await assertOwner(proposal.safeAddress, req.auth.userAddress);
   const result = await executeProposal(proposal.safeTxHash);
   res.json(result);
+});
+
+app.post('/v1/withdrawals/:proposalId/retry', async (req, res) => {
+  const proposal = await pool.query('SELECT id, safe_address FROM proposals WHERE id = $1', [req.params.proposalId]);
+  if (!proposal.rowCount) return res.status(404).json({ error: 'proposal not found' });
+  await assertOwner(proposal.rows[0].safe_address, req.auth.userAddress);
+  await retryWithdrawalFinalize({ proposalId: req.params.proposalId });
+  await processPendingWithdrawals();
+  res.json({ ok: true });
 });
 
 app.post('/v1/admin/sync', async (req, res) => {
@@ -200,6 +223,16 @@ if (config.syncPollMs > 0) {
       console.error('Sync loop error', error);
     }
   }, config.syncPollMs);
+}
+
+if (config.withdrawalPollMs > 0) {
+  setInterval(async () => {
+    try {
+      await processPendingWithdrawals();
+    } catch (error) {
+      console.error('Withdrawal loop error', error);
+    }
+  }, config.withdrawalPollMs);
 }
 
 process.on('SIGINT', async () => {
