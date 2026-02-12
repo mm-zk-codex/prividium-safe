@@ -4,6 +4,7 @@ import {
   concatHex,
   createPublicClient,
   createWalletClient,
+  decodeAbiParameters,
   decodeEventLog,
   decodeFunctionData,
   formatUnits,
@@ -101,6 +102,52 @@ const ERC20_TRANSFER_ABI = [{
   outputs: [{ name: '', type: 'bool' }]
 }];
 
+
+const L2_BASE_TOKEN = '0x000000000000000000000000000000000000800a';
+const L1_MESSENGER = '0x0000000000000000000000000000000000008008';
+
+const WITHDRAW_ABI = [{
+  type: 'function',
+  name: 'withdraw',
+  stateMutability: 'payable',
+  inputs: [{ name: '_l1Receiver', type: 'address' }],
+  outputs: []
+}];
+
+const BRIDGEHUB_ABI = [{
+  type: 'function',
+  name: 'assetRouter',
+  stateMutability: 'view',
+  inputs: [],
+  outputs: [{ type: 'address' }]
+}];
+
+const ASSET_ROUTER_ABI = [{
+  type: 'function',
+  name: 'L1_NULLIFIER',
+  stateMutability: 'view',
+  inputs: [],
+  outputs: [{ type: 'address' }]
+}];
+
+const L1_NULLIFIER_ABI = [{
+  type: 'function',
+  name: 'finalizeDeposit',
+  stateMutability: 'nonpayable',
+  inputs: [{
+    type: 'tuple',
+    components: [
+      { name: 'chainId', type: 'uint256' },
+      { name: 'l2BatchNumber', type: 'uint256' },
+      { name: 'l2MessageIndex', type: 'uint256' },
+      { name: 'l2Sender', type: 'address' },
+      { name: 'l2TxNumberInBatch', type: 'uint16' },
+      { name: 'message', type: 'bytes' },
+      { name: 'merkleProof', type: 'bytes32[]' }
+    ]
+  }],
+  outputs: []
+}];
 const ERC20_BALANCE_ABI = [{
   type: 'function',
   name: 'balanceOf',
@@ -113,6 +160,11 @@ const authTransport = http(config.rpcUrl, { fetch: authFetch });
 const publicClient = createPublicClient({ transport: authTransport });
 const serviceAccount = privateKeyToAccount(config.servicePrivateKey);
 const walletClient = createWalletClient({ account: serviceAccount, transport: authTransport });
+
+const l1PublicClient = createPublicClient({ transport: http(config.l1RpcUrl) });
+const l1RelayerAccount = privateKeyToAccount(config.l1RelayerPrivateKey);
+const l1WalletClient = createWalletClient({ account: l1RelayerAccount, transport: http(config.l1RpcUrl) });
+let cachedNullifierAddress = config.l1NullifierAddress ? normalizeAddress(config.l1NullifierAddress) : null;
 
 export function normalizeAddress(address) {
   return getAddress(address).toLowerCase();
@@ -261,6 +313,41 @@ export async function createSafe({ owners, threshold }) {
   return safe;
 }
 
+
+function getWithdrawalStatusFromProposal(row, confirmationsCount) {
+  if (row.withdrawal_status) return row.withdrawal_status;
+  if (row.executed_tx_hash) return 'executed_l2';
+  if (confirmationsCount >= row.threshold) return 'ready_to_execute';
+  return confirmationsCount > 0 ? 'awaiting_signatures' : 'proposed';
+}
+
+function buildWithdrawalProgress(status) {
+  const order = ['proposed', 'awaiting_signatures', 'ready_to_execute', 'executed_l2', 'awaiting_proof', 'finalizing_l1', 'finalized_l1'];
+  const idx = order.indexOf(status);
+  const doneIndex = idx === -1 ? -1 : idx;
+  return [
+    { step: 'Proposed', done: doneIndex >= 0 },
+    { step: 'Signatures collected', done: doneIndex >= 2 },
+    { step: 'Executed on L2', done: doneIndex >= 3 },
+    { step: 'Waiting for batch finalization', done: doneIndex >= 4 },
+    { step: 'Finalizing on L1', done: doneIndex >= 5 },
+    { step: 'Finalized on L1', done: doneIndex >= 6 }
+  ];
+}
+
+function mapWithdrawalRow(row, fallbackStatus) {
+  if (!row.withdrawal_proposal_id) return undefined;
+  const status = row.withdrawal_status || fallbackStatus;
+  return {
+    status,
+    l2TxHash: row.withdrawal_l2_tx_hash || undefined,
+    l1TxHash: row.withdrawal_l1_tx_hash || undefined,
+    l2BatchNumber: row.withdrawal_l2_batch_number?.toString(),
+    progress: buildWithdrawalProgress(status),
+    lastError: row.withdrawal_last_error || undefined
+  };
+}
+
 function rowToProposal(row, confirmations) {
   const tx = {
     to: row.recipient,
@@ -269,6 +356,7 @@ function rowToProposal(row, confirmations) {
     operation: row.operation,
     nonce: row.nonce.toString()
   };
+  const fallbackStatus = getWithdrawalStatusFromProposal(row, confirmations.length);
   return {
     id: row.id,
     safeAddress: row.safe_address,
@@ -281,7 +369,8 @@ function rowToProposal(row, confirmations) {
     executable: confirmations.length >= row.threshold && !row.executed_tx_hash,
     executedTxHash: row.executed_tx_hash || undefined,
     isAdvanced: Boolean(row.is_advanced),
-    summary: typeof row.summary === 'string' ? JSON.parse(row.summary) : row.summary || undefined
+    summary: typeof row.summary === 'string' ? JSON.parse(row.summary) : row.summary || undefined,
+    withdrawal: mapWithdrawalRow(row, fallbackStatus)
   };
 }
 
@@ -402,8 +491,16 @@ async function normalizeProposalInput(input) {
 
 export async function getProposalByHash(safeTxHash) {
   const base = await pool.query(
-    `SELECT p.*, s.threshold FROM proposals p
+    `SELECT p.*, s.threshold,
+      w.proposal_id AS withdrawal_proposal_id,
+      w.status AS withdrawal_status,
+      w.l2_tx_hash AS withdrawal_l2_tx_hash,
+      w.l1_tx_hash AS withdrawal_l1_tx_hash,
+      w.l2_batch_number AS withdrawal_l2_batch_number,
+      w.last_error AS withdrawal_last_error
+     FROM proposals p
      JOIN safes s ON s.safe_address = p.safe_address
+     LEFT JOIN withdrawals w ON w.proposal_id = p.id
      WHERE p.safe_tx_hash = $1`,
     [safeTxHash.toLowerCase()]
   );
@@ -415,8 +512,15 @@ export async function getProposalByHash(safeTxHash) {
 
 export async function listProposalsForSafe(safeAddress) {
   const rows = await pool.query(
-    `SELECT p.*, s.threshold
+    `SELECT p.*, s.threshold,
+      w.proposal_id AS withdrawal_proposal_id,
+      w.status AS withdrawal_status,
+      w.l2_tx_hash AS withdrawal_l2_tx_hash,
+      w.l1_tx_hash AS withdrawal_l1_tx_hash,
+      w.l2_batch_number AS withdrawal_l2_batch_number,
+      w.last_error AS withdrawal_last_error
      FROM proposals p JOIN safes s ON s.safe_address = p.safe_address
+     LEFT JOIN withdrawals w ON w.proposal_id = p.id
      WHERE p.safe_address = $1
      ORDER BY p.created_at DESC`,
     [normalizeAddress(safeAddress)]
@@ -460,6 +564,85 @@ export async function createProposal({ safeAddress, createdBy, tx }) {
   return getProposalByHash(safeTxHash);
 }
 
+
+export async function createWithdrawalProposal({ safeAddress, createdBy, recipient, amount }) {
+  if (!isAddress(recipient)) {
+    const err = new Error('recipient must be a valid address');
+    err.status = 400;
+    throw err;
+  }
+  const parsedAmount = parseUnits(String(amount || ''), config.nativeDecimals);
+  if (parsedAmount <= 0n) {
+    const err = new Error('amount must be greater than 0');
+    err.status = 400;
+    throw err;
+  }
+
+  const summary = {
+    type: 'l2-to-l1-withdrawal',
+    recipient: normalizeAddress(recipient),
+    amount: String(amount),
+    sourceChain: `L2 (${config.chainId})`,
+    destinationChain: 'L1'
+  };
+
+  const proposal = await createProposal({
+    safeAddress,
+    createdBy,
+    tx: {
+      mode: 'direct',
+      advanced: false,
+      tx: {
+        to: L2_BASE_TOKEN,
+        value: parsedAmount.toString(),
+        data: encodeFunctionData({ abi: WITHDRAW_ABI, functionName: 'withdraw', args: [normalizeAddress(recipient)] }),
+        operation: 0
+      }
+    }
+  });
+
+  await pool.query(
+    `INSERT INTO withdrawals (proposal_id, safe_address, l1_recipient, amount_wei, status)
+     VALUES ($1,$2,$3,$4,'proposed')
+     ON CONFLICT (proposal_id) DO NOTHING`,
+    [proposal.id, proposal.safeAddress, normalizeAddress(recipient), parsedAmount.toString()]
+  );
+
+  await pool.query('UPDATE proposals SET summary = $1 WHERE id = $2', [JSON.stringify(summary), proposal.id]);
+  return getProposalByHash(proposal.safeTxHash);
+}
+
+
+async function syncWithdrawalStatusForProposal(proposalId) {
+  const row = await pool.query(
+    `SELECT p.id, p.executed_tx_hash, s.threshold, COUNT(sig.owner_address)::int AS confirmations
+       FROM proposals p
+       JOIN safes s ON s.safe_address = p.safe_address
+       LEFT JOIN signatures sig ON sig.proposal_id = p.id
+      WHERE p.id = $1
+      GROUP BY p.id, p.executed_tx_hash, s.threshold`,
+    [proposalId]
+  );
+  if (!row.rowCount) return;
+  const r = row.rows[0];
+  let status = 'proposed';
+  if (r.executed_tx_hash) {
+    status = 'awaiting_proof';
+  } else if (r.confirmations >= r.threshold) {
+    status = 'ready_to_execute';
+  } else if (r.confirmations > 0) {
+    status = 'awaiting_signatures';
+  }
+
+  await pool.query(
+    `UPDATE withdrawals
+     SET status = CASE WHEN status IN ('awaiting_proof','finalizing_l1','finalized_l1') THEN status ELSE $1 END,
+         updated_at = now()
+     WHERE proposal_id = $2`,
+    [status, proposalId]
+  );
+}
+
 export async function addConfirmation({ safeTxHash, ownerAddress, signature }) {
   const proposal = await getProposalByHash(safeTxHash);
   if (!proposal) {
@@ -485,6 +668,7 @@ export async function addConfirmation({ safeTxHash, ownerAddress, signature }) {
      DO UPDATE SET signature = EXCLUDED.signature, created_at = now()`,
     [proposal.id, normalizeAddress(ownerAddress), signature]
   );
+  await syncWithdrawalStatusForProposal(proposal.id);
   return getProposalByHash(safeTxHash);
 }
 
@@ -548,6 +732,12 @@ export async function executeProposal(safeTxHash) {
   });
 
   await pool.query('UPDATE proposals SET executed_tx_hash = $1, executed_at = now() WHERE id = $2', [hash.toLowerCase(), proposal.id]);
+  await pool.query(
+    `UPDATE withdrawals
+     SET l2_tx_hash = $1, status = 'awaiting_proof', updated_at = now(), next_retry_at = now()
+     WHERE proposal_id = $2`,
+    [hash.toLowerCase(), proposal.id]
+  );
   return { executedTxHash: hash.toLowerCase(), proposal: await getProposalByHash(safeTxHash) };
 }
 
@@ -567,6 +757,157 @@ export async function syncExecutionsFromChain(fromBlock) {
     count += 1;
   }
   return { scanned: logs.length, matched: count };
+}
+
+
+function nextRetryMs(retryCount) {
+  return Math.min(30000 * (retryCount + 1), 5 * 60 * 1000);
+}
+
+async function getNullifierAddress() {
+  if (cachedNullifierAddress) return cachedNullifierAddress;
+  let assetRouter = config.l1AssetRouterAddress ? normalizeAddress(config.l1AssetRouterAddress) : null;
+  if (!assetRouter) {
+    const bridgehubAddress = normalizeAddress(config.bridgehubAddress);
+    assetRouter = normalizeAddress(await l1PublicClient.readContract({
+      address: bridgehubAddress,
+      abi: BRIDGEHUB_ABI,
+      functionName: 'assetRouter'
+    }));
+  }
+  cachedNullifierAddress = normalizeAddress(await l1PublicClient.readContract({
+    address: assetRouter,
+    abi: ASSET_ROUTER_ABI,
+    functionName: 'L1_NULLIFIER'
+  }));
+  return cachedNullifierAddress;
+}
+
+function unwrapMessageBytes(logData) {
+  const [message] = decodeAbiParameters([{ type: 'bytes' }], logData);
+  return message;
+}
+
+async function processSingleWithdrawal(withdrawal) {
+  try {
+    if (withdrawal.status === 'failed' && withdrawal.l1_tx_hash) {
+      await pool.query(`UPDATE withdrawals SET status='finalized_l1', updated_at=now() WHERE proposal_id = $1`, [withdrawal.proposal_id]);
+      return;
+    }
+
+    if (withdrawal.status === 'awaiting_proof' || withdrawal.status === 'failed') {
+      const proofRaw = await publicClient.request({ method: 'zks_getL2ToL1LogProof', params: [withdrawal.l2_tx_hash, Number(withdrawal.l2_message_index || 0)] });
+      if (!proofRaw) {
+        await pool.query(
+          `UPDATE withdrawals SET status='awaiting_proof', retry_count = retry_count + 1, next_retry_at = now() + ($2::text || ' milliseconds')::interval, updated_at = now() WHERE proposal_id=$1`,
+          [withdrawal.proposal_id, String(nextRetryMs(withdrawal.retry_count || 0))]
+        );
+        return;
+      }
+
+      const l2BatchNumber = Number(proofRaw.l2BatchNumber ?? proofRaw.l1BatchNumber ?? proofRaw.id ?? proofRaw.batchNumber);
+      const l2MessageIndex = Number(proofRaw.l2MessageIndex ?? proofRaw.id ?? withdrawal.l2_message_index ?? 0);
+      const l2TxNumberInBatch = Number(proofRaw.l2TxNumberInBatch ?? proofRaw.txNumberInBatch ?? proofRaw.logProof?.txNumberInBatch ?? 0);
+      const merkleProof = proofRaw.proof || proofRaw.merkleProof || proofRaw.logProof?.proof || [];
+      if (!Number.isFinite(l2BatchNumber)) throw new Error('Proof missing l2 batch number');
+
+      const receipt = await publicClient.getTransactionReceipt({ hash: withdrawal.l2_tx_hash });
+      const messengerLog = receipt.logs.find((log) => log.address?.toLowerCase() === L1_MESSENGER);
+      if (!messengerLog?.data) throw new Error('Unable to find L1 messenger log for withdrawal message');
+      const message = unwrapMessageBytes(messengerLog.data);
+      await pool.query(
+        `UPDATE withdrawals
+         SET status='finalizing_l1', l2_batch_number=$2, l2_message_index=$3, l2_tx_number_in_batch=$4,
+             merkle_proof=$5::jsonb, proof_raw=$6::jsonb, message=$7, updated_at=now(), next_retry_at=now()
+         WHERE proposal_id=$1`,
+        [
+          withdrawal.proposal_id,
+          l2BatchNumber,
+          l2MessageIndex,
+          l2TxNumberInBatch,
+          JSON.stringify(merkleProof),
+          JSON.stringify(proofRaw),
+          message
+        ]
+      );
+      withdrawal = {
+        ...withdrawal,
+        status: 'finalizing_l1',
+        l2_batch_number: l2BatchNumber,
+        l2_message_index: l2MessageIndex,
+        l2_tx_number_in_batch: l2TxNumberInBatch,
+        merkle_proof: merkleProof,
+        message
+      };
+    }
+
+    if (withdrawal.status === 'finalizing_l1') {
+      if (withdrawal.l1_tx_hash) {
+        await pool.query(`UPDATE withdrawals SET status='finalized_l1', updated_at=now() WHERE proposal_id=$1`, [withdrawal.proposal_id]);
+        return;
+      }
+      const nullifier = await getNullifierAddress();
+      const merkleProof = Array.isArray(withdrawal.merkle_proof) ? withdrawal.merkle_proof : (typeof withdrawal.merkle_proof === 'string' ? JSON.parse(withdrawal.merkle_proof) : []);
+      const txHash = await l1WalletClient.writeContract({
+        address: nullifier,
+        abi: L1_NULLIFIER_ABI,
+        functionName: 'finalizeDeposit',
+        args: [{
+          chainId: BigInt(config.l2ChainId),
+          l2BatchNumber: BigInt(withdrawal.l2_batch_number),
+          l2MessageIndex: BigInt(withdrawal.l2_message_index || 0),
+          l2Sender: normalizeAddress(withdrawal.l2_sender || L2_BASE_TOKEN),
+          l2TxNumberInBatch: Number(withdrawal.l2_tx_number_in_batch || 0),
+          message: withdrawal.message,
+          merkleProof
+        }]
+      });
+      await pool.query(`UPDATE withdrawals SET l1_tx_hash=$2, status='finalized_l1', updated_at=now(), last_error=NULL WHERE proposal_id=$1`, [withdrawal.proposal_id, txHash.toLowerCase()]);
+    }
+  } catch (error) {
+    await pool.query(
+      `UPDATE withdrawals
+       SET status='failed', last_error=$2, retry_count = retry_count + 1,
+           next_retry_at = now() + ($3::text || ' milliseconds')::interval,
+           updated_at=now()
+       WHERE proposal_id=$1`,
+      [withdrawal.proposal_id, error.message, String(nextRetryMs(withdrawal.retry_count || 0))]
+    );
+  }
+}
+
+export async function processPendingWithdrawals() {
+  const rows = await pool.query(
+    `SELECT * FROM withdrawals
+     WHERE (
+       status IN ('awaiting_proof','finalizing_l1')
+       OR (status = 'failed' AND next_retry_at IS NOT NULL AND next_retry_at <= now())
+     )
+     AND (next_retry_at IS NULL OR next_retry_at <= now())
+     ORDER BY updated_at ASC
+     LIMIT 25`
+  );
+
+  for (const row of rows.rows) {
+    await processSingleWithdrawal(row);
+  }
+}
+
+export async function retryWithdrawalFinalize({ proposalId }) {
+  const result = await pool.query('SELECT * FROM withdrawals WHERE proposal_id = $1', [proposalId]);
+  if (!result.rowCount) {
+    const err = new Error('Withdrawal not found');
+    err.status = 404;
+    throw err;
+  }
+  const row = result.rows[0];
+  const nextStatus = row.message && row.l2_batch_number !== null ? 'finalizing_l1' : 'awaiting_proof';
+  await pool.query(
+    `UPDATE withdrawals
+     SET status = $2, last_error = NULL, retry_count = retry_count + 1, next_retry_at = now(), updated_at = now()
+     WHERE proposal_id = $1`,
+    [proposalId, nextStatus]
+  );
 }
 
 export async function getLatestBlockNumber() {
