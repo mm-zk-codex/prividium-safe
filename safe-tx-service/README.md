@@ -6,8 +6,8 @@ From the repo root:
 
 ```bash
 cp .env.example .env
-# fill all required values, especially deployer key + Safe bytecodes
-docker compose up
+# fill all required values
+docker compose up --build
 ```
 
 What happens:
