@@ -5,6 +5,8 @@ import dotenv from 'dotenv';
 import { Pool } from 'pg';
 import { createPublicClient, createWalletClient, getAddress, http, isAddress } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
+import { createSiweTenantTokenProvider } from './tenant/siweTenantAuth.ts';
+import { tenantHttpTransport } from './transport/tenantHttpTransport.ts';
 import { compileContracts } from './compile.ts';
 
 dotenv.config();
@@ -120,6 +122,34 @@ async function writeContractsJson(contracts: ConfigRecord) {
   await fs.writeFile(CONTRACTS_FILE_PATH, `${JSON.stringify(contracts, null, 2)}\n`, 'utf8');
 }
 
+
+function createRpcTransport(rpcUrl: string) {
+  const mode = (process.env.TENANT_AUTH_MODE || 'none').toLowerCase();
+  if (mode === 'none') {
+    return http(rpcUrl);
+  }
+
+  if (mode !== 'siwe') {
+    throw new Error('TENANT_AUTH_MODE must be one of: none, siwe');
+  }
+
+  const tenantPrivateKey = process.env.TENANT_PRIVATE_KEY as `0x${string}` | undefined;
+  const tenantSiweBaseUrl = process.env.TENANT_SIWE_BASE_URL;
+  if (!tenantPrivateKey || !tenantSiweBaseUrl) {
+    throw new Error('TENANT_AUTH_MODE=siwe requires TENANT_PRIVATE_KEY and TENANT_SIWE_BASE_URL');
+  }
+
+  const tenantAddress = privateKeyToAccount(tenantPrivateKey).address;
+  const tokenProvider = createSiweTenantTokenProvider({
+    tenantRpcBaseUrl: tenantSiweBaseUrl,
+    tenantAddress,
+    tenantPrivateKey,
+    audience: process.env.TENANT_AUDIENCE
+  });
+
+  return tenantHttpTransport(rpcUrl, tokenProvider);
+}
+
 async function main() {
   const databaseUrl = required('DATABASE_URL');
   const rpcUrl = required('L2_RPC_URL');
@@ -142,8 +172,9 @@ async function main() {
   await compileContracts();
 
   const account = privateKeyToAccount(privateKey);
-  const publicClient = createPublicClient({ transport: http(rpcUrl) });
-  const walletClient = createWalletClient({ account, transport: http(rpcUrl) });
+  const transport = createRpcTransport(rpcUrl);
+  const publicClient = createPublicClient({ transport });
+  const walletClient = createWalletClient({ account, transport });
 
   const rpcChainId = await publicClient.getChainId();
   if (rpcChainId !== expectedChainId) {

@@ -18,6 +18,14 @@ This image compiles and deploys contracts on first run.
 - `CHAIN_ID`
 - `DEPLOYER_PRIVATE_KEY`
 
+Tenant auth mode:
+
+- `TENANT_AUTH_MODE=none` uses plain viem HTTP transport
+- `TENANT_AUTH_MODE=siwe` requires:
+  - `TENANT_SIWE_BASE_URL`
+  - `TENANT_PRIVATE_KEY`
+  - optional `TENANT_AUDIENCE`
+
 Optional:
 
 - `MULTISEND_ADDRESS` (skip MultiSend deploy)

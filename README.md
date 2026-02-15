@@ -15,13 +15,18 @@
    - `CHAIN_ID`
    - `DEPLOYER_PRIVATE_KEY` (used only by the one-shot `init` service)
 
-   Optional tenant auth variables:
+3. Configure tenant auth mode:
 
-   - `TENANT_AUTH_MODE`
-   - `TENANT_API_KEY`
-   - `TENANT_WALLET_PRIVATE_KEY`
+   - `TENANT_AUTH_MODE=siwe` (recommended/default for privileged RPC)
+   - `TENANT_AUTH_MODE=none` (dev mode)
 
-3. Start services:
+   When `TENANT_AUTH_MODE=siwe`, set:
+
+   - `TENANT_SIWE_BASE_URL`
+   - `TENANT_PRIVATE_KEY`
+   - optional `TENANT_AUDIENCE`
+
+4. Start services:
 
    ```bash
    docker compose up --build
@@ -37,3 +42,11 @@
 - On later runs it detects existing records, prints `already initialized`, and exits without redeploying.
 
 Runtime services do not receive `DEPLOYER_PRIVATE_KEY`.
+
+## Tenant SIWE authentication
+
+Why we use it: privileged sequencer/RPC methods require tenant authorization.
+
+- A tenant JWT is obtained via SIWE.
+- The JWT is automatically attached to viem JSON-RPC HTTP calls via a transport wrapper.
+- On `401 Unauthorized`, the token is invalidated, refreshed, and the RPC call is retried once automatically.

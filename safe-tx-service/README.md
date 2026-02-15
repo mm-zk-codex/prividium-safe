@@ -28,10 +28,9 @@ On subsequent `docker compose up`, `init` is idempotent: if `app_config` already
 Set `TENANT_AUTH_MODE` to one of:
 
 - `none` (default)
-- `siwe` (requires `TENANT_WALLET_PRIVATE_KEY`)
-- `api_key` (requires `TENANT_API_KEY`)
+- `siwe` (requires `TENANT_PRIVATE_KEY`, optional `TENANT_SIWE_BASE_URL`, optional `TENANT_AUDIENCE`)
 
-Tenant credentials are only attached to indexing/receipt visibility RPC calls (e.g. `eth_getBlockReceipts`).
+When enabled, tenant SIWE JWTs are refreshed automatically and retried once on `401` for privileged receipt visibility RPC calls (e.g. `eth_getBlockReceipts`).
 
 ## Advanced calldata / target controls
 
