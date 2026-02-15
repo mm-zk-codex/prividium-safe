@@ -11,7 +11,7 @@ services:
       timeout: 5s
       retries: 20
     ports:
-      - "5432:5432"
+      - "5440:5432"
     volumes:
       - pg_data:/var/lib/postgresql/data
 
@@ -42,7 +42,7 @@ services:
     working_dir: /app
     environment:
       PORT: 4010
-      DATABASE_URL: ${DATABASE_URL:-postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-safe_tx}}
+      DATABASE_URL: ${DATABASE_URL:-postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5440/${POSTGRES_DB:-safe_tx}}
       PRIVIDIUM_RPC_URL: ${L2_RPC_URL}
       L1_RPC_URL: ${L1_RPC_URL}
       PRIVIDIUM_PERMISSIONS_API_BASE_URL: ${PRIVIDIUM_PERMISSIONS_API_BASE_URL}
