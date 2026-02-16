@@ -179,7 +179,7 @@ const ERC20_BALANCE_ABI = [{
   outputs: [{ name: '', type: 'uint256' }]
 }];
 
-const authTransport = http(config.rpcUrl, { fetch: authFetch });
+const authTransport = http(config.rpcUrl, { fetchFn: authFetch });
 const publicClient = createPublicClient({ transport: authTransport });
 const serviceAccount = privateKeyToAccount(config.servicePrivateKey);
 const walletClient = createWalletClient({ account: serviceAccount, transport: authTransport });
