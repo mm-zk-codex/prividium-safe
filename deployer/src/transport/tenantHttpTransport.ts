@@ -6,11 +6,11 @@ export function tenantHttpTransport(
   tokenProvider: TokenProvider,
   config?: HttpTransportConfig
 ): Transport {
-  const baseFetch = config?.fetch ?? fetch;
+  const baseFetch = config?.fetchFn ?? fetch;
 
   return http(rpcUrl, {
     ...config,
-    fetch: async (url: RequestInfo | URL, init?: RequestInit) => {
+    fetchFn: async (url: RequestInfo | URL, init?: RequestInit) => {
       const sendWithToken = async (token: string) => {
         const headers = new Headers(init?.headers as HeadersInit);
         headers.set('Authorization', `Bearer ${token}`);

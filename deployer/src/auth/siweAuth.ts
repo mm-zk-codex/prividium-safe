@@ -32,8 +32,9 @@ export function createSiweTokenProvider(opts: {
   permissionsApiBaseUrl: string;
   privateKey: `0x${string}`;
   audience?: string;
+  permissionsDomain?: string;
 }): TokenProvider {
-  const { permissionsApiBaseUrl, privateKey, audience } = opts;
+  const { permissionsApiBaseUrl, privateKey, audience, permissionsDomain } = opts;
   const account = privateKeyToAccount(privateKey);
 
   let token: string | null = null;
@@ -41,7 +42,7 @@ export function createSiweTokenProvider(opts: {
   let inflight: Promise<string> | null = null;
 
   const login = async (): Promise<string> => {
-    const domain = domainFromUrl(permissionsApiBaseUrl);
+    const domain = permissionsDomain ?? domainFromUrl(permissionsApiBaseUrl);
 
     const msgRes = await fetch(`${permissionsApiBaseUrl}/api/siwe-messages`, {
       method: 'POST',

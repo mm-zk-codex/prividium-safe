@@ -11,7 +11,7 @@ services:
       timeout: 5s
       retries: 20
     ports:
-      - "5432:5432"
+      - "5440:5432"
     volumes:
       - pg_data:/var/lib/postgresql/data
 
@@ -20,15 +20,15 @@ services:
       context: .
       dockerfile: deployer/Dockerfile
     environment:
-      DATABASE_URL: ${DATABASE_URL:-postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-safe_tx}}
+      DATABASE_URL: ${DATABASE_URL:-postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5440/${POSTGRES_DB:-safe_tx}}
       L2_RPC_URL: ${L2_RPC_URL}
       CHAIN_ID: ${CHAIN_ID}
       DEPLOYER_PRIVATE_KEY: ${DEPLOYER_PRIVATE_KEY}
       TENANT_AUTH_MODE: ${TENANT_AUTH_MODE:-none}
       PRIVIDIUM_PERMISSIONS_API_BASE_URL: ${PRIVIDIUM_PERMISSIONS_API_BASE_URL:-}
-      TENANT_AUDIENCE: ${TENANT_AUDIENCE:-}
       MULTISEND_ADDRESS: ${MULTISEND_ADDRESS:-}
       PRIVATE_CONTRACT_DEPLOYMENTS: ${PRIVATE_CONTRACT_DEPLOYMENTS:-}
+      PRIVIDIUM_PERMISSIONS_DOMAIN: ${PRIVIDIUM_PERMISSIONS_DOMAIN:-}
     volumes:
       - contracts_shared:/shared
     depends_on:
@@ -41,7 +41,7 @@ services:
     working_dir: /app
     environment:
       PORT: 4010
-      DATABASE_URL: ${DATABASE_URL:-postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-safe_tx}}
+      DATABASE_URL: ${DATABASE_URL:-postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5440/${POSTGRES_DB:-safe_tx}}
       PRIVIDIUM_RPC_URL: ${L2_RPC_URL}
       L1_RPC_URL: ${L1_RPC_URL}
       PRIVIDIUM_PERMISSIONS_API_BASE_URL: ${PRIVIDIUM_PERMISSIONS_API_BASE_URL}

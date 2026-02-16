@@ -124,15 +124,6 @@ async function writeContractsJson(contracts: ConfigRecord) {
 
 
 function createRpcTransport(rpcUrl: string) {
-  const mode = (process.env.TENANT_AUTH_MODE || 'none').toLowerCase();
-  if (mode === 'none') {
-    return http(rpcUrl);
-  }
-
-  if (mode !== 'siwe') {
-    throw new Error('TENANT_AUTH_MODE must be one of: none, siwe');
-  }
-
   const permissionsApiBaseUrl = process.env.PRIVIDIUM_PERMISSIONS_API_BASE_URL;
   if (!permissionsApiBaseUrl) {
     throw new Error('TENANT_AUTH_MODE=siwe requires PRIVIDIUM_PERMISSIONS_API_BASE_URL for deployer SIWE login');
@@ -146,7 +137,7 @@ function createRpcTransport(rpcUrl: string) {
   const tokenProvider = createSiweTokenProvider({
     permissionsApiBaseUrl,
     privateKey: deployerPk,
-    audience: process.env.TENANT_AUDIENCE
+    permissionsDomain: process.env.PRIVIDIUM_PERMISSIONS_DOMAIN
   });
 
   return tenantHttpTransport(rpcUrl, tokenProvider);
@@ -203,10 +194,10 @@ async function main() {
       process.env.MULTISEND_ADDRESS && isAddress(process.env.MULTISEND_ADDRESS)
         ? normalize(process.env.MULTISEND_ADDRESS)
         : await deployArtifact({
-            walletClient,
-            publicClient,
-            relativePath: 'contracts/SafeDeploy.sol/SafeMultiSend.json'
-          })
+          walletClient,
+          publicClient,
+          relativePath: 'contracts/SafeDeploy.sol/SafeMultiSend.json'
+        })
   };
 
   for (const deployment of parsePrivateDeployments()) {
