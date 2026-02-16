@@ -1,5 +1,5 @@
 import { createPublicClient, encodeAbiParameters, getAddress, http } from 'viem';
-import { authFetch } from './prividiumAuth.js';
+import { authFetch, serviceAccountAddress } from './prividiumAuth.js';
 import { config } from './config.js';
 
 export const L2_ASSET_ROUTER = '0x0000000000000000000000000000000000010003';
@@ -50,7 +50,7 @@ const L1_NATIVE_TOKEN_VAULT_ABI = [{
   outputs: [{ type: 'address' }]
 }];
 
-const l2Client = createPublicClient({ transport: http(config.rpcUrl, { fetch: authFetch }) });
+const l2Client = createPublicClient({ transport: http(config.rpcUrl, { fetchFn: authFetch }) });
 const l1Client = createPublicClient({ transport: http(config.l1RpcUrl) });
 
 const tokenParamsCache = new Map();
@@ -97,7 +97,8 @@ export async function getErc20WithdrawalParams(l2TokenAddress) {
     address: L2_NATIVE_TOKEN_VAULT,
     abi: L2_NATIVE_TOKEN_VAULT_ABI,
     functionName: 'assetId',
-    args: [normalizedToken]
+    args: [normalizedToken],
+    account: serviceAccountAddress
   });
 
   if (!assetId || assetId === '0x0000000000000000000000000000000000000000000000000000000000000000') {

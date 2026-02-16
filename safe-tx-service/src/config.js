@@ -28,6 +28,7 @@ export const config = {
   l1NullifierAddress: process.env.L1_NULLIFIER_ADDRESS || null,
   l1RelayerPrivateKey: required('L1_RELAYER_PRIVATE_KEY'),
   permissionsApiBaseUrl: required('PRIVIDIUM_PERMISSIONS_API_BASE_URL'),
+  domain: process.env.SIWE_DOMAIN || null,
   chainId: Number(required('CHAIN_ID')),
   l2ChainId: Number(required('L2_CHAIN_ID')),
   servicePrivateKey: required('SERVICE_PRIVATE_KEY'),

@@ -1,7 +1,7 @@
 import { getAddress } from 'viem';
 import { config } from './config.js';
 import { SUPPORTED_TOKENS, WITHDRAWABLE_TOKENS } from './config/tokens.js';
-import { authFetch } from './prividiumAuth.js';
+import { authFetch, serviceAccountAddress } from './prividiumAuth.js';
 import { createPublicClient, http } from 'viem';
 import { getErc20WithdrawalParams } from './erc20Withdrawal.js';
 
@@ -12,7 +12,7 @@ const ERC20_METADATA_ABI = [
 ];
 
 const metadataCache = new Map();
-const authTransport = http(config.rpcUrl, { fetch: authFetch });
+const authTransport = http(config.rpcUrl, { fetchFn: authFetch });
 const publicClient = createPublicClient({ transport: authTransport });
 
 function normalize(address) {
@@ -44,9 +44,9 @@ export async function getTokenMetadata(address) {
   }
 
   const [name, symbol, decimals] = await Promise.all([
-    publicClient.readContract({ address: normalized, abi: ERC20_METADATA_ABI, functionName: 'name' }),
-    publicClient.readContract({ address: normalized, abi: ERC20_METADATA_ABI, functionName: 'symbol' }),
-    publicClient.readContract({ address: normalized, abi: ERC20_METADATA_ABI, functionName: 'decimals' })
+    publicClient.readContract({ address: normalized, abi: ERC20_METADATA_ABI, functionName: 'name', account: serviceAccountAddress }),
+    publicClient.readContract({ address: normalized, abi: ERC20_METADATA_ABI, functionName: 'symbol', account: serviceAccountAddress }),
+    publicClient.readContract({ address: normalized, abi: ERC20_METADATA_ABI, functionName: 'decimals', account: serviceAccountAddress })
   ]);
 
   const metadata = {
