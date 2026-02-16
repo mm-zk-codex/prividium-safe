@@ -54,3 +54,12 @@ Why we use it: privileged sequencer/RPC methods require tenant authorization.
 - For deployment/init, a **regular Prividium SIWE JWT** is obtained with the deployer wallet.
 - The JWT is automatically attached to viem JSON-RPC HTTP calls via a transport wrapper.
 - On `401 Unauthorized`, the token is invalidated, refreshed, and the RPC call is retried once automatically.
+
+
+## Other steps
+
+* create an admin user (or at least with deployment permissions) for DEPLOYER_PRIVATE_KEY
+* User for service (SERVICE_PRIVATE_KEY)
+   * permissions to access ERC20 and 10004
+
+

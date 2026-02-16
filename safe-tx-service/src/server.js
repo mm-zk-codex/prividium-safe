@@ -1,5 +1,6 @@
 import express from 'express';
 import cors from 'cors';
+import 'express-async-errors';
 import { authMiddleware } from './auth.js';
 import { config } from './config.js';
 import { initDb, pool } from './db.js';
