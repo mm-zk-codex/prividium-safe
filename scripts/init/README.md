@@ -1,2 +1,2 @@
-Compose init helper scripts live in `examples/safe-tx-service/scripts`.
+Compose init helper scripts now live in `deployer/src`.
 This directory is reserved for repo-level bootstrap helpers.

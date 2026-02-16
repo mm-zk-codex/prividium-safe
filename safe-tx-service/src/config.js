@@ -42,12 +42,22 @@ export const config = {
   withdrawalPollMs: Number(process.env.WITHDRAWAL_POLL_MS || 10000),
   sharedContractsPath: process.env.CONTRACTS_JSON_PATH || '/shared/contracts.json',
   tenantAuthMode: process.env.TENANT_AUTH_MODE || 'none',
-  tenantApiKey: process.env.TENANT_API_KEY || null,
-  tenantWalletPrivateKey: process.env.TENANT_WALLET_PRIVATE_KEY || null,
+  tenantPrivateKey: process.env.TENANT_PRIVATE_KEY || null,
+  tenantSiweBaseUrl: process.env.TENANT_SIWE_BASE_URL || null,
+  tenantAudience: process.env.TENANT_AUDIENCE || null,
   allowAdvancedCalldata: process.env.ALLOW_ADVANCED_CALLDATA === 'true',
   allowDelegatecall: process.env.ALLOW_DELEGATECALL === 'true',
   allowCustomTargets: process.env.ALLOW_CUSTOM_TARGETS === 'true'
 };
+
+
+if (!['none', 'siwe'].includes(config.tenantAuthMode)) {
+  throw new Error('TENANT_AUTH_MODE must be one of: none, siwe');
+}
+
+if (config.tenantAuthMode === 'siwe' && !config.tenantPrivateKey) {
+  throw new Error('TENANT_PRIVATE_KEY is required when TENANT_AUTH_MODE=siwe');
+}
 
 if (!config.l1NullifierAddress && !config.bridgehubAddress && !config.l1AssetRouterAddress) {
   throw new Error('Set L1_NULLIFIER_ADDRESS or provide L1_BRIDGEHUB_ADDRESS / L1_ASSET_ROUTER_ADDRESS for nullifier discovery');

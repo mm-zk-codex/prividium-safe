@@ -34,31 +34,77 @@ export async function getServiceToken() {
 }
 
 let tenantCache = { token: null, expiresAt: 0 };
-async function getTenantToken() {
-  if (config.tenantAuthMode !== 'siwe') return null;
-  if (!config.tenantWalletPrivateKey) throw new Error('TENANT_WALLET_PRIVATE_KEY is required for TENANT_AUTH_MODE=siwe');
-  if (tenantCache.token && Date.now() < tenantCache.expiresAt) return tenantCache.token;
+let tenantInflight = null;
 
-  const account = privateKeyToAccount(config.tenantWalletPrivateKey);
-  const domain = getDomainFromUrl(config.permissionsApiBaseUrl);
-  const msgRes = await fetch(`${config.permissionsApiBaseUrl}/api/siwe-messages/tenants`, {
+function tenantBaseUrl() {
+  return config.tenantSiweBaseUrl || config.permissionsApiBaseUrl;
+}
+
+function decodeJwtExp(token) {
+  try {
+    const payload = JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString('utf8'));
+    return payload.exp ? Number(payload.exp) * 1000 : null;
+  } catch (_error) {
+    return null;
+  }
+}
+
+async function loginTenant() {
+  if (!config.tenantPrivateKey) {
+    throw new Error('TENANT_PRIVATE_KEY is required for TENANT_AUTH_MODE=siwe');
+  }
+
+  const account = privateKeyToAccount(config.tenantPrivateKey);
+  const baseUrl = tenantBaseUrl();
+  const domain = getDomainFromUrl(baseUrl);
+
+  const msgRes = await fetch(`${baseUrl}/api/siwe-messages/tenants`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ address: account.address, domain })
+    body: JSON.stringify({
+      address: account.address,
+      domain,
+      ...(config.tenantAudience ? { audience: config.tenantAudience } : {})
+    })
   });
-  if (!msgRes.ok) throw new Error('Failed to request SIWE tenant message');
+  if (!msgRes.ok) throw new Error(`Failed to request SIWE tenant message (${msgRes.status})`);
   const { msg } = await msgRes.json();
 
   const signature = await account.signMessage({ message: msg });
-  const loginRes = await fetch(`${config.permissionsApiBaseUrl}/api/jwt/from-siwe`, {
+  const loginRes = await fetch(`${baseUrl}/api/jwt/from-siwe`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ message: msg, signature })
+    body: JSON.stringify({
+      message: msg,
+      signature,
+      ...(config.tenantAudience ? { audience: config.tenantAudience } : {})
+    })
   });
-  if (!loginRes.ok) throw new Error('Failed to get tenant JWT');
+  if (!loginRes.ok) throw new Error(`Failed to get tenant JWT (${loginRes.status})`);
+
   const { token } = await loginRes.json();
-  tenantCache = { token, expiresAt: Date.now() + 55 * 60 * 1000 };
+  const exp = decodeJwtExp(token);
+  tenantCache = { token, expiresAt: exp || Date.now() + 55 * 60 * 1000 };
   return token;
+}
+
+function invalidateTenantToken() {
+  tenantCache = { token: null, expiresAt: 0 };
+}
+
+async function getTenantToken() {
+  if (config.tenantAuthMode !== 'siwe') return null;
+
+  const refreshAt = tenantCache.expiresAt - 60_000;
+  if (tenantCache.token && Date.now() < refreshAt) return tenantCache.token;
+
+  if (!tenantInflight) {
+    tenantInflight = loginTenant().finally(() => {
+      tenantInflight = null;
+    });
+  }
+
+  return tenantInflight;
 }
 
 function methodFromBody(init) {
@@ -75,29 +121,41 @@ function shouldUseTenantAuth(method) {
 }
 
 async function applyTenantHeaders(headers, method) {
-  if (!shouldUseTenantAuth(method)) return headers;
-
-  if (config.tenantAuthMode === 'api_key') {
-    if (!config.tenantApiKey) throw new Error('TENANT_API_KEY is required for TENANT_AUTH_MODE=api_key');
-    return { ...headers, 'x-api-key': config.tenantApiKey };
+  if (!shouldUseTenantAuth(method) || config.tenantAuthMode === 'none') {
+    return { headers, usingTenant: false };
   }
 
-  if (config.tenantAuthMode === 'siwe') {
-    const token = await getTenantToken();
-    return { ...headers, Authorization: `Bearer ${token}` };
+  if (config.tenantAuthMode !== 'siwe') {
+    throw new Error('TENANT_AUTH_MODE must be one of: none, siwe');
   }
 
-  return headers;
+  const token = await getTenantToken();
+  return {
+    headers: { ...headers, Authorization: `Bearer ${token}` },
+    usingTenant: true
+  };
 }
 
 export async function authFetch(url, init = {}) {
   const serviceToken = await getServiceToken();
   const method = methodFromBody(init);
-  let headers = {
+
+  const baseHeaders = {
     ...(init.headers || {}),
     Authorization: `Bearer ${serviceToken}`
   };
 
-  headers = await applyTenantHeaders(headers, method);
-  return fetch(url, { ...init, headers });
+  const { headers, usingTenant } = await applyTenantHeaders(baseHeaders, method);
+  let response = await fetch(url, { ...init, headers });
+
+  if (usingTenant && response.status === 401) {
+    invalidateTenantToken();
+    const refreshedTenantToken = await getTenantToken();
+    response = await fetch(url, {
+      ...init,
+      headers: { ...baseHeaders, Authorization: `Bearer ${refreshedTenantToken}` }
+    });
+  }
+
+  return response;
 }
