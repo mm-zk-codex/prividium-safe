@@ -29,6 +29,7 @@ VITE_REDIRECT_URL=http://localhost:5173/auth/callback.html
 VITE_CHAIN_ID=7777
 VITE_CHAIN_NAME="Prividium Demo"
 VITE_EXPLORER_URL=https://<explorer>
+VITE_USER_PANEL_URL=https://<user-panel-url>
 ```
 
 ## Run
