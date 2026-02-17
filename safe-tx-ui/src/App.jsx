@@ -7,6 +7,7 @@ import {
   toHex
 } from 'viem';
 import { API_BASE_URL, prividium, USER_PANEL_URL } from './prividium';
+import { formatFullTime, formatRelativeTime } from './utils/time';
 
 const PROPOSAL_MODES = [
   { key: 'erc20', label: 'ERC20 Transfer', advanced: false },
@@ -49,11 +50,13 @@ const toWeiPreview = (amount, decimals) => {
   }
 };
 
-const formatTimestamp = (iso) => {
-  if (!iso) return '—';
-  const parsed = new Date(iso);
-  if (Number.isNaN(parsed.getTime())) return '—';
-  return parsed.toLocaleString();
+const EXPECTED_WAITING_PATTERNS = ['not executed yet', 'not finalized yet', 'has not been executed yet'];
+
+const isExpectedWaitingError = (message = '') => {
+  const normalized = message.toLowerCase();
+  if (!normalized) return false;
+  if (normalized.includes('batch') && normalized.includes('not executed yet')) return true;
+  return EXPECTED_WAITING_PATTERNS.some((pattern) => normalized.includes(pattern));
 };
 
 const getRoute = () => {
@@ -102,18 +105,18 @@ const getProposalStatus = (proposal, myAddress) => {
 
 
 const proposalTypeFilters = [
-  { key: 'all', label: 'All proposals' },
+  { key: 'all', label: 'All transactions' },
   { key: 'withdrawals', label: 'Withdrawals' },
-  { key: 'other', label: 'Other txs' }
+  { key: 'other', label: 'Transfers/Other' }
 ];
 
 const statusFilters = [
   { key: 'all', label: 'All' },
   { key: 'active', label: 'Active' },
   { key: 'needsSig', label: 'Needs your signature' },
-  { key: 'waitingBatch', label: 'Waiting for batch finalization' },
+  { key: 'waitingBatch', label: 'Waiting for L1' },
   { key: 'ready', label: 'Ready to execute' },
-  { key: 'executedL1', label: 'Executed L1' },
+  { key: 'executedL1', label: 'Executed' },
   { key: 'rejected', label: 'Rejected' }
 ];
 
@@ -950,7 +953,7 @@ export default function App() {
                             <span className="hash-full">{entry.address}</span>
                             <button className="icon-btn" onClick={() => onCopy(entry.address).catch(() => addToast('Copy failed', 'error'))}>Copy</button>
                           </div>
-                          <p className="muted">Last changed: {formatTimestamp(entry.lastChangedAt)} by {shorten(entry.lastChangedBy)}</p>
+                          <p className="muted">Last changed: {formatFullTime(entry.lastChangedAt)} by {shorten(entry.lastChangedBy)}</p>
                           <div className="inline">
                             <Button variant="secondary" onClick={() => beginEditAddressBookEntry(entry)}>Edit</Button>
                             <Button variant="secondary" onClick={() => removeAddressBookEntry(entry.id).catch((e) => addToast(e.message, 'error'))}>Delete</Button>
@@ -978,8 +981,20 @@ export default function App() {
 
               {safeTab === 'proposals' && (
                 <Card title="Proposals" action={<Button disabled={isWrongNetwork} title={isWrongNetwork ? networkBlockedMessage : ''} onClick={() => setProposalModalOpen(true)}>New Proposal</Button>}>
-                  <Tabs compact value={proposalTypeFilter} onChange={setProposalTypeFilter} tabs={proposalTypeFilters} />
-                  <Tabs compact value={proposalFilter} onChange={setProposalFilter} tabs={statusFilters} />
+                  <Tabs value={proposalTypeFilter} onChange={setProposalTypeFilter} tabs={proposalTypeFilters} />
+                  <div className="proposal-filter-row">
+                    <label htmlFor="proposal-status-filter" className="muted">Status:</label>
+                    <select id="proposal-status-filter" className="status-select" value={proposalFilter} onChange={(e) => setProposalFilter(e.target.value)}>
+                      {statusFilters.map((filter) => <option key={filter.key} value={filter.key}>{filter.label}</option>)}
+                    </select>
+                    <button
+                      type="button"
+                      className={`quick-filter ${proposalFilter === 'needsSig' ? 'active' : ''}`}
+                      onClick={() => setProposalFilter(proposalFilter === 'needsSig' ? 'all' : 'needsSig')}
+                    >
+                      Needs your signature
+                    </button>
+                  </div>
 
                   {loadingProposals ? <Skeleton lines={5} /> : filteredProposals.length === 0 ? <p className="muted">No proposals in this category.</p> : (
                     <div className="stack">
@@ -1006,41 +1021,59 @@ export default function App() {
                             { step: 'Executed on L2', done: Boolean(proposal.executedTxHash) }
                           ]).map((step, index, arr) => {
                             const nextDone = arr[index + 1]?.done;
-                            return { key: step.step, label: step.step, done: step.done, active: step.done && !nextDone };
+                            return { key: step.step, label: step.step, done: Boolean(step.done), active: Boolean(step.done && !nextDone) };
                           });
+                        const currentStep = timeline.find((step) => step.active) || null;
+                        const waitingStepActive = Boolean(currentStep && currentStep.label.toLowerCase().includes('wait'));
+                        const rawError = proposal.withdrawal?.lastError || '';
+                        const hasRawError = Boolean(rawError);
+                        const isExpectedWaiting = isExpectedWaitingError(rawError);
+                        const showInlineWarning = hasRawError && !isExpectedWaiting;
 
                         const toLabel = recipientEntry ? `${recipientEntry.label} (${shorten(tx.to)})` : shorten(tx.to);
                         const nonceLabel = proposal.tx?.nonce || '0';
+                        const createdRelative = formatRelativeTime(proposal.createdAt);
+                        const createdFull = formatFullTime(proposal.createdAt);
                         const l2Tx = proposal.withdrawal?.l2TxHash || proposal.executedTxHash;
                         const l1Tx = proposal.withdrawal?.l1TxHash;
 
                         return (
                           <div className={`proposal-card proposal-detail ${isRejected ? 'proposal-rejected' : ''}`} key={proposal.id || proposal.safeTxHash}>
                             <div className="proposal-header-bar">
-                              <Badge tone={status.tone || 'info'}>{status.label}</Badge>
-                              <strong className="proposal-title">{summaryFromProposal(proposal)}</strong>
-                              <span className="muted">{proposal.confirmations?.length || 0}/{proposal.confirmationsRequired} confirmations</span>
-                              <span className="nonce-chip">Nonce #{nonceLabel}</span>
-                              {status.tooltip && <span className="muted" title={status.tooltip}>ⓘ</span>}
+                              <div className="proposal-title-row">
+                                <Badge tone={status.tone || 'info'}>{status.label}</Badge>
+                                <strong className="proposal-title">{summaryFromProposal(proposal)}</strong>
+                                {status.tooltip && <span className="muted" title={status.tooltip}>ⓘ</span>}
+                              </div>
+                              <div className="proposal-meta-right">
+                                <span className="muted">{proposal.confirmations?.length || 0}/{proposal.confirmationsRequired} confirmations</span>
+                                <span className="nonce-chip">Nonce #{nonceLabel}</span>
+                              </div>
                             </div>
 
+                            <p className="muted proposal-subline">
+                              Created by {shorten(proposal.createdBy)} • <span title={createdFull}>{createdRelative}</span>
+                            </p>
+
                             <div className="detail-grid">
-                              <div><span className="muted">SafeTxHash</span><p><span className="hash-full">{shorten(proposal.safeTxHash)}</span> <button className="icon-btn" onClick={() => onCopy(proposal.safeTxHash).catch(() => addToast('Copy failed', 'error'))}>Copy</button></p></div>
+                              <p className="detail-grid-title"><strong>At a glance</strong></p>
+                              <div><span className="muted">SafeTxHash</span><p className="value-with-action"><span className="hash-short">{shorten(proposal.safeTxHash)}</span> <button className="icon-btn" onClick={() => onCopy(proposal.safeTxHash).catch(() => addToast('Copy failed', 'error'))}>Copy</button></p></div>
                               <div><span className="muted">Nonce</span><p>{nonceLabel}</p></div>
-                              <div><span className="muted">Created by</span><p>{shorten(proposal.createdBy)} · {formatTimestamp(proposal.createdAt)}</p></div>
                               <div><span className="muted">Type</span><p>{typeLabel}</p></div>
-                              <div><span className="muted">L2 Tx</span><p>{l2Tx ? (l2Explorer ? <a href={`${l2Explorer.replace(/\/$/, '')}/tx/${l2Tx}`} target="_blank" rel="noreferrer">{shorten(l2Tx)}</a> : <>{shorten(l2Tx)}</>) : '—'}{l2Tx && <button className="icon-btn" onClick={() => onCopy(l2Tx).catch(() => addToast('Copy failed', 'error'))}>Copy</button>}</p></div>
-                              <div><span className="muted">L1 Tx</span><p>{l1Tx ? (l1Explorer ? <a href={`${l1Explorer.replace(/\/$/, '')}/tx/${l1Tx}`} target="_blank" rel="noreferrer">{shorten(l1Tx)}</a> : <>{shorten(l1Tx)}</>) : '—'}{l1Tx && <button className="icon-btn" onClick={() => onCopy(l1Tx).catch(() => addToast('Copy failed', 'error'))}>Copy</button>}</p></div>
+                              <div><span className="muted">L2 tx</span><p className="value-with-action">{l2Tx ? (l2Explorer ? <a href={`${l2Explorer.replace(/\/$/, '')}/tx/${l2Tx}`} target="_blank" rel="noreferrer" className="hash-short">{shorten(l2Tx)}</a> : <span className="hash-short">{shorten(l2Tx)}</span>) : '—'}{l2Tx && <button className="icon-btn" onClick={() => onCopy(l2Tx).catch(() => addToast('Copy failed', 'error'))}>Copy</button>}</p></div>
+                              <div><span className="muted">L1 tx</span><p className="value-with-action">{l1Tx ? (l1Explorer ? <a href={`${l1Explorer.replace(/\/$/, '')}/tx/${l1Tx}`} target="_blank" rel="noreferrer" className="hash-short">{shorten(l1Tx)}</a> : <span className="hash-short">{shorten(l1Tx)}</span>) : '—'}{l1Tx && <button className="icon-btn" onClick={() => onCopy(l1Tx).catch(() => addToast('Copy failed', 'error'))}>Copy</button>}</p></div>
                             </div>
 
                             {proposal.withdrawal && (
                               <div className="summary-box">
                                 <strong>Withdrawal summary</strong>
-                                <p className="muted">Asset: {proposal.withdrawal.assetType === 'erc20' ? (proposal.withdrawal.token?.symbol || 'ERC20') : prividium.chain.nativeCurrency.symbol}</p>
-                                {proposal.withdrawal.assetType === 'erc20' && <p className="muted">L2 token: {shorten(proposal.withdrawal.token?.l2TokenAddress || '')} <button className="icon-btn" onClick={() => onCopy(proposal.withdrawal.token?.l2TokenAddress || '').catch(() => addToast('Copy failed', 'error'))}>Copy</button></p>}
-                                {proposal.withdrawal.assetType === 'erc20' && <p className="muted">L1 token: {shorten(proposal.withdrawal.token?.l1TokenAddress || proposal.summary?.l1TokenAddress || '')} <button className="icon-btn" onClick={() => onCopy(proposal.withdrawal.token?.l1TokenAddress || proposal.summary?.l1TokenAddress || '').catch(() => addToast('Copy failed', 'error'))}>Copy</button></p>}
-                                <p className="muted">Recipient: {shorten(proposal.withdrawal.recipient || proposal.summary?.recipient || '')} <button className="icon-btn" onClick={() => onCopy(proposal.withdrawal.recipient || proposal.summary?.recipient || '').catch(() => addToast('Copy failed', 'error'))}>Copy</button></p>
-                                <p className="muted">Amount: {proposal.summary?.amount || '—'}</p>
+                                <div className="summary-grid">
+                                  <p className="muted"><span>Asset</span><strong>{proposal.withdrawal.assetType === 'erc20' ? (proposal.withdrawal.token?.symbol || 'ERC20') : prividium.chain.nativeCurrency.symbol}</strong></p>
+                                  {proposal.withdrawal.assetType === 'erc20' && <p className="muted"><span>L2 token</span><span className="value-with-action"><span className="hash-short">{shorten(proposal.withdrawal.token?.l2TokenAddress || '')}</span> <button className="icon-btn" onClick={() => onCopy(proposal.withdrawal.token?.l2TokenAddress || '').catch(() => addToast('Copy failed', 'error'))}>Copy</button></span></p>}
+                                  {proposal.withdrawal.assetType === 'erc20' && <p className="muted"><span>L1 token</span><span className="value-with-action"><span className="hash-short">{shorten(proposal.withdrawal.token?.l1TokenAddress || proposal.summary?.l1TokenAddress || '')}</span> <button className="icon-btn" onClick={() => onCopy(proposal.withdrawal.token?.l1TokenAddress || proposal.summary?.l1TokenAddress || '').catch(() => addToast('Copy failed', 'error'))}>Copy</button></span></p>}
+                                  <p className="muted"><span>Recipient</span><span className="value-with-action"><span className="hash-short">{shorten(proposal.withdrawal.recipient || proposal.summary?.recipient || '')}</span> <button className="icon-btn" onClick={() => onCopy(proposal.withdrawal.recipient || proposal.summary?.recipient || '').catch(() => addToast('Copy failed', 'error'))}>Copy</button></span></p>
+                                  <p className="muted"><span>Amount</span><strong>{proposal.summary?.amount || '—'}</strong></p>
+                                </div>
                               </div>
                             )}
 
@@ -1048,11 +1081,11 @@ export default function App() {
                               <strong>Timeline</strong>
                               <ul className="timeline-list muted">
                                 {timeline.map((step) => (
-                                  <li key={step.key} className={step.active ? 'active' : ''}>{step.done ? '●' : '○'} {step.label}</li>
+                                  <li key={step.key} className={step.active ? 'active' : ''}>{step.active ? '⏳' : step.done ? '✓' : '○'} {step.label}</li>
                                 ))}
                               </ul>
-                              {!isRejected && proposal.withdrawal?.waitingHint && <p className="muted">{proposal.withdrawal.waitingHint}</p>}
-                              {proposal.withdrawal?.lastError && <p className="error">{proposal.withdrawal.lastError}</p>}
+                              {!isRejected && waitingStepActive && <p className="waiting-inline">Waiting for L1 batch finalization (timing varies).</p>}
+                              {showInlineWarning && <p className="warning-inline">⚠ Something went wrong. Open technical details for more.</p>}
                             </div>
 
                             <details>
@@ -1063,8 +1096,16 @@ export default function App() {
                                 <p className="to-line"><span className="muted">Value:</span> <span>{tx.value}</span></p>
                                 <p className="to-line"><span className="muted">Data:</span> <span className="hash-full">{shorten(tx.data, 10, 8)}</span></p>
                                 {proposal.summary?.batchedActions?.length ? <p className="muted">Batch calls: {proposal.summary.batchedActions.join(', ')}</p> : null}
+                                {hasRawError ? <p className="to-line"><span className="muted">Last error:</span> <span className="hash-full">{rawError}</span></p> : null}
                               </div>
                             </details>
+
+                            {hasRawError && (
+                              <details>
+                                <summary>Technical details</summary>
+                                <p className="muted hash-full">{rawError}</p>
+                              </details>
+                            )}
 
                             <div className={`inline ${isRejected ? 'deemphasized' : ''}`}>
                               {isNeedsSig && <Button variant="secondary" disabled={isWrongNetwork} title={isWrongNetwork ? networkBlockedMessage : ''} onClick={() => confirm(proposal).catch((e) => addToast(e.message, 'error'))}>Sign</Button>}
