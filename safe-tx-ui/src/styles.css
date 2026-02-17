@@ -87,6 +87,25 @@ h1 { margin: 4px 0 0; font-size: 1.75rem; }
 .btn-primary { background: #4f46e5; color: #fff; }
 .btn-secondary { background: #e2e8f0; color: #0f172a; }
 
+
+.btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.network-panel {
+  background: #fff;
+  border: 1px solid #f59e0b;
+  border-radius: 12px;
+  padding: 12px;
+  margin-bottom: 16px;
+}
+
+.network-panel ul {
+  margin: 8px 0;
+  padding-left: 18px;
+}
+
 .badge {
   border-radius: 999px;
   padding: 4px 10px;

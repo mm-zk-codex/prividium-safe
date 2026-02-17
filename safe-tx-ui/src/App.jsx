@@ -3,9 +3,10 @@ import {
   createWalletClient,
   custom,
   isAddress,
-  parseUnits
+  parseUnits,
+  toHex
 } from 'viem';
-import { API_BASE_URL, prividium } from './prividium';
+import { API_BASE_URL, prividium, USER_PANEL_URL } from './prividium';
 
 const PROPOSAL_MODES = [
   { key: 'erc20', label: 'ERC20 Transfer', advanced: false },
@@ -224,8 +225,15 @@ export default function App() {
   const [customData, setCustomData] = useState('0x');
   const [customOperation, setCustomOperation] = useState('0');
   const [proposalError, setProposalError] = useState('');
+  const [walletAddress, setWalletAddress] = useState(null);
+  const [walletChainId, setWalletChainId] = useState(null);
 
   const isAuthed = useMemo(() => prividium.isAuthorized(), [me]);
+  const requiredChainId = prividium.chain.id;
+  const hasWallet = typeof window !== 'undefined' && Boolean(window.ethereum);
+  const isConnected = Boolean(walletAddress || me?.address);
+  const isWrongNetwork = isConnected && hasWallet && walletChainId !== null && Number(walletChainId) !== Number(requiredChainId);
+  const networkBlockedMessage = 'Switch to the Prividium network to continue.';
   const myAddress = me?.address?.toLowerCase();
   const l2Explorer = import.meta.env.VITE_EXPLORER_URL;
   const l1Explorer = import.meta.env.VITE_L1_EXPLORER_URL || '';
@@ -308,6 +316,42 @@ export default function App() {
     return () => window.removeEventListener('popstate', onPop);
   }, []);
 
+  const refreshWalletState = async () => {
+    if (typeof window === 'undefined' || !window.ethereum || !walletClient) {
+      setWalletAddress(null);
+      setWalletChainId(null);
+      return;
+    }
+
+    try {
+      const [addresses, chainId] = await Promise.all([
+        walletClient.getAddresses(),
+        walletClient.getChainId()
+      ]);
+      setWalletAddress(addresses?.[0] || null);
+      setWalletChainId(Number(chainId));
+    } catch (_error) {
+      setWalletAddress(null);
+      setWalletChainId(null);
+    }
+  };
+
+  useEffect(() => {
+    refreshWalletState();
+    if (!window.ethereum) return;
+
+    const onChainChanged = () => refreshWalletState();
+    const onAccountsChanged = () => refreshWalletState();
+
+    window.ethereum.on('chainChanged', onChainChanged);
+    window.ethereum.on('accountsChanged', onAccountsChanged);
+
+    return () => {
+      window.ethereum.removeListener('chainChanged', onChainChanged);
+      window.ethereum.removeListener('accountsChanged', onAccountsChanged);
+    };
+  }, [isAuthed]);
+
   useEffect(() => {
     if (me?.address) {
       setOwners((current) => {
@@ -357,6 +401,50 @@ export default function App() {
     await prividium.authorize({ scopes: ['wallet:required', 'network:required'] });
     await prividium.addNetworkToWallet();
     await refresh();
+    await refreshWalletState();
+  };
+
+  const addOrSwitchNetwork = async () => {
+    if (!walletClient || !window.ethereum) throw new Error('No injected wallet found');
+    try {
+      await walletClient.switchChain({ id: requiredChainId });
+    } catch (error) {
+      if (error?.code === 4902) {
+        await window.ethereum.request({
+          method: 'wallet_addEthereumChain',
+          params: [{
+            chainId: toHex(requiredChainId),
+            chainName: prividium.chain.name,
+            nativeCurrency: prividium.chain.nativeCurrency,
+            rpcUrls: prividium.chain.rpcUrls.default.http,
+            blockExplorerUrls: prividium.chain.blockExplorers?.default?.url ? [prividium.chain.blockExplorers.default.url] : []
+          }]
+        });
+        await walletClient.switchChain({ id: requiredChainId });
+      } else {
+        throw error;
+      }
+    }
+    await refreshWalletState();
+  };
+
+  const disconnect = async () => {
+    if (typeof prividium.logout === 'function') {
+      await prividium.logout();
+    }
+    if (typeof prividium.clearAuth === 'function') {
+      await prividium.clearAuth();
+    }
+    localStorage.clear();
+    sessionStorage.clear();
+    setMe(null);
+    setSafes([]);
+    setSafeDetail(null);
+    setProposals([]);
+    setBalances(null);
+    setAddressBook([]);
+    setWalletAddress(null);
+    setWalletChainId(null);
   };
 
   const validateCreate = () => {
@@ -687,9 +775,29 @@ export default function App() {
         </div>
         <div className="wallet-pill">
           {isAuthed ? <><span>Connected:</span> <strong>{shorten(me?.address || '')}</strong></> : 'Not connected'}
-          {isAuthed ? null : <Button onClick={login}>Login with Prividium</Button>}
+          {isAuthed ? (
+            <>
+              {isWrongNetwork && <Button variant="secondary" onClick={() => addOrSwitchNetwork().catch((e) => addToast(e.message, 'error'))}>Add / Switch network</Button>}
+              <Button variant="secondary" onClick={() => disconnect().catch((e) => addToast(e.message, 'error'))}>Disconnect (clears local session)</Button>
+            </>
+          ) : <Button onClick={login}>Login with Prividium</Button>}
         </div>
       </header>
+
+      {isAuthed && isWrongNetwork && (
+        <section className="network-panel">
+          <strong>Network setup required</strong>
+          <p className="muted">Your wallet is on the wrong network. Switch to Prividium to continue.</p>
+          <ul>
+            <li>Add the Prividium network in the User Panel.</li>
+            <li>Then come back and click “Switch network”.</li>
+          </ul>
+          <div className="inline">
+            {USER_PANEL_URL && <a className="btn btn-secondary" href={USER_PANEL_URL} target="_blank" rel="noreferrer">Open User Panel</a>}
+            <Button onClick={() => addOrSwitchNetwork().catch((e) => addToast(e.message, 'error'))}>Add / Switch network</Button>
+          </div>
+        </section>
+      )}
 
       {isAuthed && (
         <>
@@ -747,7 +855,7 @@ export default function App() {
                     <p><strong>Summary</strong></p>
                     <p>{owners.length} owner(s) • {threshold} signatures required</p>
                   </div>
-                  <Button onClick={() => createSafe().catch((e) => addToast(e.message, 'error'))}>Create Safe</Button>
+                  <Button disabled={isWrongNetwork} title={isWrongNetwork ? networkBlockedMessage : ''} onClick={() => createSafe().catch((e) => addToast(e.message, 'error'))}>Create Safe</Button>
                 </Card>
               )}
             </>
@@ -869,7 +977,7 @@ export default function App() {
               )}
 
               {safeTab === 'proposals' && (
-                <Card title="Proposals" action={<Button onClick={() => setProposalModalOpen(true)}>New Proposal</Button>}>
+                <Card title="Proposals" action={<Button disabled={isWrongNetwork} title={isWrongNetwork ? networkBlockedMessage : ''} onClick={() => setProposalModalOpen(true)}>New Proposal</Button>}>
                   <Tabs compact value={proposalTypeFilter} onChange={setProposalTypeFilter} tabs={proposalTypeFilters} />
                   <Tabs compact value={proposalFilter} onChange={setProposalFilter} tabs={statusFilters} />
 
@@ -959,8 +1067,8 @@ export default function App() {
                             </details>
 
                             <div className={`inline ${isRejected ? 'deemphasized' : ''}`}>
-                              {isNeedsSig && <Button variant="secondary" onClick={() => confirm(proposal).catch((e) => addToast(e.message, 'error'))}>Sign</Button>}
-                              {isReady && <Button onClick={() => execute(proposal).catch((e) => addToast(e.message, 'error'))}>Execute</Button>}
+                              {isNeedsSig && <Button variant="secondary" disabled={isWrongNetwork} title={isWrongNetwork ? networkBlockedMessage : ''} onClick={() => confirm(proposal).catch((e) => addToast(e.message, 'error'))}>Sign</Button>}
+                              {isReady && <Button disabled={isWrongNetwork} title={isWrongNetwork ? networkBlockedMessage : ''} onClick={() => execute(proposal).catch((e) => addToast(e.message, 'error'))}>Execute</Button>}
                               {proposal.withdrawal?.status === 'failed' && <Button variant="secondary" onClick={() => retryFinalize(proposal.id).catch((e) => addToast(e.message, 'error'))}>Retry finalize</Button>}
                             </div>
                           </div>
@@ -1120,7 +1228,7 @@ export default function App() {
 
             <div className="inline">
               <Button variant="secondary" onClick={() => setProposalModalOpen(false)}>Cancel</Button>
-              <Button onClick={() => propose().catch((e) => setProposalError(e.message))}>Create proposal</Button>
+              <Button disabled={isWrongNetwork} title={isWrongNetwork ? networkBlockedMessage : ''} onClick={() => propose().catch((e) => setProposalError(e.message))}>Create proposal</Button>
             </div>
           </div>
         </div>
